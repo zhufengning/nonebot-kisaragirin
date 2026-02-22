@@ -1,0 +1,35 @@
+[project]
+name = "bot_renew"
+version = "0.1.0"
+description = "bot_renew"
+readme = "README.md"
+requires-python = ">=3.13, <4.0"
+dependencies = [
+    "nonebot2[fastapi]>=2.4.4",
+    "nonebot2[httpx]>=2.4.4",
+    "nonebot2[websockets]>=2.4.4",
+    "nonebot-adapter-onebot>=2.4.6",
+    "nonebot-adapter-telegram>=0.1.0b20",
+    "nb-cli>=1.7.0",
+    "openai>=2.21.0",
+    "kisaragirin",
+]
+
+[tool.nonebot]
+plugin_dirs = ["zfnbot/plugins/"]
+builtin_plugins = []
+
+[tool.nonebot.adapters]
+nonebot-adapter-onebot = [
+    { name = "OneBot V11", module_name = "nonebot.adapters.onebot.v11" }
+]
+nonebot-adapter-telegram = [
+    { name = "Telegram", module_name = "nonebot.adapters.telegram" }
+]
+"@local" = []
+
+[tool.nonebot.plugins]
+"@local" = []
+
+[tool.uv.sources]
+kisaragirin = { path = "kisaragirin", editable = true }
