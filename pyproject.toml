@@ -3,7 +3,7 @@ name = "bot_renew"
 version = "0.1.0"
 description = "bot_renew"
 readme = "README.md"
-requires-python = ">=3.13, <4.0"
+requires-python = ">=3.13, <3.14"
 dependencies = [
     "nonebot2[fastapi]>=2.4.4",
     "nonebot2[httpx]>=2.4.4",

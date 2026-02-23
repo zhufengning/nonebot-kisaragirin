@@ -194,6 +194,22 @@ class SQLiteMemoryStore:
             )
             self._conn.commit()
 
+    def clear_short_term(self, conversation_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM short_term_memory WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            self._conn.commit()
+
+    def clear_long_term(self, conversation_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM long_term_memory WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            self._conn.commit()
+
     def get_image_description(self, image_sha256: str) -> str | None:
         with self._lock:
             row = self._conn.execute(

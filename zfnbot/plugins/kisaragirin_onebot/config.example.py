@@ -8,6 +8,7 @@ from kisaragirin import ModelConfig, StepModelIds
 @dataclass(slots=True, frozen=True)
 class GroupConfig:
     persona: str
+    fixed_memory: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -17,13 +18,14 @@ class ReplyTimingConfig:
     idle_expect_minutes: int = 15
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(slots=True, frozen=True, kw_only=True)
 class PluginConfig:
     models: tuple[ModelConfig, ...]
     step_models: StepModelIds
+    groups: dict[int, GroupConfig]
+    ops: tuple[int, ...] = ()
     brave_search_api_key: str = ""
     serpapi_api_key: str = ""
-    groups: dict[int, GroupConfig]
     timing: ReplyTimingConfig = field(default_factory=ReplyTimingConfig)
     memory_db_path: str = ".kisaragirin_memory.sqlite3"
     debug: bool = False
@@ -57,7 +59,11 @@ PLUGIN_CONFIG = PluginConfig(
         reply="kimi",
         memory="kimi",
     ),
+    ops=(123456789,),
     groups={
-        1234567890: GroupConfig(persona="""你是一只猫娘"""),
+        1234567890: GroupConfig(
+            persona="""你是一只猫娘""",
+            fixed_memory="""这里是一些固定的记忆，会被注入到对话上下文中""",
+        ),
     },
 )

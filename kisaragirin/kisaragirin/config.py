@@ -30,6 +30,7 @@ class StepModelIds:
 @dataclass(slots=True)
 class PromptConfig:
     persona: str = ""
+    fixed_memory: str = ""
 
 
 @dataclass(slots=True)

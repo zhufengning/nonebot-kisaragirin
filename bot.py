@@ -1,17 +1,39 @@
 import nonebot
 from nonebot.adapters.onebot.v11 import Adapter as OnebotAdapter
 import logging
-import os
+import sys
+from nonebot.log import logger, default_format, LoguruHandler
 
-level_name = os.getenv("LOG_LEVEL", "INFO").upper()
-level = getattr(logging, level_name, logging.INFO)
-logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-logging.getLogger("kisaragirin.agent").setLevel(level)
+# 自定义一个 Handler 忽略 uvicorn 自身的重复转发
+class InterceptHandler(LoguruHandler):
+    def emit(self, record: logging.LogRecord):
+        # 拦截 uvicorn 和 fastapi 的重复日志，因为它们由 driver 自身配置了专门的 Handler 转发到 Loguru
+        if record.name.startswith("uvicorn") or record.name.startswith("fastapi"):
+            return
+        super().emit(record)
 
-# WebSocket keepalive ping/pong is normal; default to INFO to avoid noisy DEBUG spam.
-websockets_level_name = os.getenv("WEBSOCKETS_LOG_LEVEL", "INFO").upper()
-websockets_level = getattr(logging, websockets_level_name, logging.INFO)
-logging.getLogger("websockets").setLevel(websockets_level)
+# 1. 重定向标准 logging 到 NoneBot 的 Loguru 实现彩色和统一格式
+logging.basicConfig(handlers=[InterceptHandler()], level=logging.DEBUG, force=True)
+
+# 2. 覆盖默认的 Loguru 处理器日志过滤规则（忽略环境变量，只给指定项开启 DEBUG）
+logger.remove()
+
+def custom_log_filter(record):
+    name = record.get("name", "")
+    # 对指定的插件或模块开启 DEBUG，其余一律保持 WARNING
+    if name.startswith("kisaragirin") or name.startswith("zfnbot"):
+        levelno = logger.level("DEBUG").no
+    else:
+        levelno = logger.level("WARNING").no
+    return record["level"].no >= levelno
+
+logger.add(
+    sys.stdout,
+    filter=custom_log_filter,
+    format=default_format,
+    diagnose=False,
+    colorize=True,
+)
 
 # 初始化 NoneBot
 nonebot.init()

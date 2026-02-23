@@ -10,6 +10,7 @@
   - `brave_search_api_key`：Brave Search API Key（为空时不启用 `web_search` 工具）
   - `serpapi_api_key`：SerpApi Key（为空时不启用 `scholar_search` 工具）
   - `groups`：群白名单 + 每群 persona
+  - `ops`：可执行管理指令的 QQ 号白名单（非 ops 执行会返回 `Access Denied`）
   - `timing.mention_quiet_seconds`：收到消息后静默 N 秒触发 @ 回复检查
   - `timing.idle_start_minutes`：群聊静默 M 分钟后进入“抽卡回复”
   - `timing.idle_expect_minutes`：抽卡概率增长的期望回复时长
@@ -43,7 +44,10 @@
 
 ## 指令
 
+- `/help`：查看指令帮助。
 - `/clear`：清空当前群的消息队列，并删除该群 conversation 的短期/长期记忆。
+- `/clears`：只清除该群 conversation 的短期记忆。
+- `/clearl`：只清除该群 conversation 的长期记忆。
 
 ## 典型日志
 

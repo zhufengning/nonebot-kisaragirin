@@ -170,6 +170,16 @@ class KisaragiAgent:
         with conversation_lock:
             self._memory_store.clear_conversation(conversation_id)
 
+    def clear_short_term_memory(self, conversation_id: str) -> None:
+        conversation_lock = self._get_conversation_lock(conversation_id)
+        with conversation_lock:
+            self._memory_store.clear_short_term(conversation_id)
+
+    def clear_long_term_memory(self, conversation_id: str) -> None:
+        conversation_lock = self._get_conversation_lock(conversation_id)
+        with conversation_lock:
+            self._memory_store.clear_long_term(conversation_id)
+
     def close(self) -> None:
         with self._close_lock:
             if self._closed:
@@ -255,6 +265,8 @@ class KisaragiAgent:
         working_text = (
             "[STEP-0-LONG-TERM-MEMORY]\n"
             f"{long_term_memory or '(empty)'}\n\n"
+            "[STEP-0-FIXED-MEMORY]\n"
+            f"{self._config.prompts.fixed_memory or '(empty)'}\n\n"
             "[STEP-0-SHORT-TERM-CONTEXT]\n"
             f"{short_term_context}\n\n"
             "[STEP-0-RESOURCE-ALIASES]\n"
@@ -637,7 +649,8 @@ class KisaragiAgent:
     def _log_step_debug(self, state: AgentState, step: str, content: str) -> None:
         if not bool(state.get("debug")):
             return
-        self._logger.info("[DEBUG][%s]\n%s", step, content)
+        conversation_id = str(state.get("conversation_id", "?"))
+        self._logger.info("[DEBUG][%s][conversation=%s]\n%s", step, conversation_id, content)
 
     @staticmethod
     def _get_conversation_lock(conversation_id: str) -> Lock:
@@ -745,14 +758,14 @@ class KisaragiAgent:
 
     def _system_prompt(self, step: str) -> str:
         sections: list[str] = []
-        if self._config.prompts.persona.strip():
-            sections.append("[PERSONA]\n" + self._config.prompts.persona.strip())
         instruction = STEP_SYSTEM_INSTRUCTIONS.get(step, "")
         if instruction:
-            sections.append(f"[STEP-INSTRUCTION:{step}]\n{instruction}")
+            sections.append(f"---\nThis is a scenario task evaluation project used to test the capabilities of LLM. After reading the task file, complete the corresponding tasks according to the instructions within, and output the final results.\n---TASK FILE CONTENT---\n\n[STEP-INSTRUCTION:{step}]\n{instruction}")
+        if self._config.prompts.persona.strip():
+            sections.append("---Additional Task Requirements---\n[OUTPUT_STYLE.PERSONA]\n" + self._config.prompts.persona.strip())
         if sections:
-            return "\n\n".join(sections)
-        return f"You are in step '{step}'."
+            return ("\n\n".join(sections))+"\n---\n"
+        return f"You are in step '{step}'.\n---\n"
 
     def _build_short_term_user_message(self, state: AgentState) -> str:
         user_message = str(state.get("user_message", ""))
