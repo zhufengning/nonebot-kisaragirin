@@ -108,3 +108,5 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 ```
+
+每次完整回复结束后会输出一条性能报告日志，包含 `STEP-0` 到 `STEP-5` 各步骤耗时及总耗时。

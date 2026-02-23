@@ -69,6 +69,7 @@
 
 - `bot.py` 自定义了日志过滤：`kisaragirin*` 与 `zfnbot*` 默认 DEBUG，其它模块（含 nonebot）默认 WARNING。
 - 打开 `PLUGIN_CONFIG.debug=True` 后，Agent 的 step 调试内容会通过 `kisaragirin.agent` 日志输出。
+- 每次完整回复结束后，`kisaragirin.agent` 会统一输出一条性能日志，包含 `STEP-0` 到 `STEP-5` 各步耗时和总耗时。
 
 ## 运行方式（本地）
 

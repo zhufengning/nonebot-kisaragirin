@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import Sequence
 from importlib import import_module
 from pathlib import Path
@@ -74,6 +75,7 @@ class AgentState(TypedDict, total=False):
     working_text: str
     reply: str
     step_attachments: dict[str, str]
+    step_durations_ms: dict[str, float]
 
 
 class _BackgroundAsyncRunner:
@@ -122,9 +124,18 @@ class _BackgroundAsyncRunner:
 
 
 class KisaragiAgent:
+    _PERF_STEP_ORDER = ("STEP-0", "STEP-1", "STEP-2", "STEP-3", "STEP-4", "STEP-5")
+
     def __init__(self, config: AgentConfig, tools: Sequence[BaseTool] | None = None) -> None:
         self._config = config
         self._logger = logging.getLogger("kisaragirin.agent")
+        self._nonebot_logger: Any | None = None
+        try:
+            from nonebot import logger as nonebot_logger
+
+            self._nonebot_logger = nonebot_logger
+        except Exception:
+            self._nonebot_logger = None
         self._memory_store = SQLiteMemoryStore(config.memory_db_path)
         self._models = self._build_models(config)
         self._crawler_cls = None
@@ -156,7 +167,14 @@ class KisaragiAgent:
                 "debug": request.debug,
                 "step_attachments": {},
             }
+            started_at = time.perf_counter()
             result = self._graph.invoke(initial_state)
+            total_ms = (time.perf_counter() - started_at) * 1000
+            self._log_performance_report(
+                conversation_id=request.conversation_id,
+                step_durations_ms=result.get("step_durations_ms"),
+                total_ms=total_ms,
+            )
 
             return ConversationResponse(
                 reply=str(result.get("reply", "")),
@@ -223,12 +241,12 @@ class KisaragiAgent:
 
     def _build_graph(self):
         graph = StateGraph(AgentState)
-        graph.add_node("step0_prepare", self._step0_prepare)
-        graph.add_node("step1_urls", self._step1_urls)
-        graph.add_node("step2_vision", self._step2_vision)
-        graph.add_node("step3_tools", self._step3_tools)
-        graph.add_node("step4_reply", self._step4_reply)
-        graph.add_node("step5_memory", self._step5_memory)
+        graph.add_node("step0_prepare", self._with_step_timing("STEP-0", self._step0_prepare))
+        graph.add_node("step1_urls", self._with_step_timing("STEP-1", self._step1_urls))
+        graph.add_node("step2_vision", self._with_step_timing("STEP-2", self._step2_vision))
+        graph.add_node("step3_tools", self._with_step_timing("STEP-3", self._step3_tools))
+        graph.add_node("step4_reply", self._with_step_timing("STEP-4", self._step4_reply))
+        graph.add_node("step5_memory", self._with_step_timing("STEP-5", self._step5_memory))
 
         graph.add_edge(START, "step0_prepare")
         graph.add_edge("step0_prepare", "step1_urls")
@@ -238,6 +256,32 @@ class KisaragiAgent:
         graph.add_edge("step4_reply", "step5_memory")
         graph.add_edge("step5_memory", END)
         return graph.compile()
+
+    def _with_step_timing(
+        self,
+        step_name: str,
+        step_fn: Any,
+    ):
+        def _wrapped(state: AgentState) -> AgentState:
+            started_at = time.perf_counter()
+            result = step_fn(state)
+            elapsed_ms = (time.perf_counter() - started_at) * 1000
+
+            merged_step_durations: dict[str, float] = {}
+            for source in (state.get("step_durations_ms"), result.get("step_durations_ms")):
+                if isinstance(source, dict):
+                    for key, value in source.items():
+                        try:
+                            merged_step_durations[str(key)] = float(value)
+                        except Exception:
+                            continue
+            merged_step_durations[step_name] = elapsed_ms
+
+            merged_result = dict(result)
+            merged_result["step_durations_ms"] = merged_step_durations
+            return merged_result
+
+        return _wrapped
 
     def _step0_prepare(self, state: AgentState) -> AgentState:
         conversation_id = state["conversation_id"]
@@ -651,7 +695,36 @@ class KisaragiAgent:
         if not bool(state.get("debug")):
             return
         conversation_id = str(state.get("conversation_id", "?"))
-        self._logger.info("[DEBUG][%s][conversation=%s]\n%s", step, conversation_id, content)
+        self._log_info("[DEBUG][%s][conversation=%s]\n%s", step, conversation_id, content)
+
+    def _log_performance_report(
+        self,
+        *,
+        conversation_id: str,
+        step_durations_ms: dict[str, float] | None,
+        total_ms: float,
+    ) -> None:
+        durations = step_durations_ms if isinstance(step_durations_ms, dict) else {}
+        parts: list[str] = []
+        for step_name in self._PERF_STEP_ORDER:
+            value = durations.get(step_name)
+            if isinstance(value, (int, float)):
+                parts.append(f"{step_name}={float(value):.2f}ms")
+            else:
+                parts.append(f"{step_name}=n/a")
+        self._log_info(
+            "[PERF][conversation=%s] total=%.2fms %s",
+            conversation_id,
+            total_ms,
+            " ".join(parts),
+        )
+
+    def _log_info(self, fmt: str, *args: Any) -> None:
+        message = fmt % args if args else fmt
+        if self._nonebot_logger is not None:
+            self._nonebot_logger.info(message)
+            return
+        self._logger.info(message)
 
     @staticmethod
     def _get_conversation_lock(conversation_id: str) -> Lock:

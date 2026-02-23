@@ -10,11 +10,11 @@ STEP_SYSTEM_INSTRUCTIONS: dict[str, str] = {
         "用户是盲人，你需要为他详细描述下面的图片。首先输出图片类型，例如，如果图片是社交平台、网站、游戏、...的截图，类型为`{平台名/游戏名/(无法识别具体平台时留空)}截图`；如果图片包含平台水印，类型为`{平台名}转载`；如果图片为无水印的照片，类型为`照片`；如果图片看起来像表情包，类型为`表情包`；此外，还可标注`艺术作品`、`meme`、......这些类型。之后，输出图片描述。如果图片中有文字，请添加到结果中。图片描述中不要添加额外解释。输出内容中只包含符合格式要求的图片描述，仅输出风格参考OUTPUT_STYLE。\n## 输出示例\n图片类型：微博转载\n图片描述：这是一张照片，内容为[示例中省略]\n"),
     "tool": (
         "Decide whether external tools are needed. If needed, call tools with "
-        "precise arguments. You may do multi-round tool use."
+        "precise arguments. You may do multi-round tool use. 请勿重复调用同一个工具。"
         "当输入内容中包含：\n"
-        "\t1. 知识点，例如“量子纠缠”、“黑洞信息悖论”、“人工智能的图灵测试”等等，调用网络搜索工具\n"
-        "\t2. 需要查询的事实，例如“2024年奥运会在哪举办”、“爱因斯坦是什么时候出生的”、“中国的首都是哪里”等等，也调用网络搜索工具\n"
-        "\t3. 学术研究相关的问题，例如“Transformer模型的核心创新是什么”、“如何提高神经网络的泛化能力”、“最近在强化学习领域有哪些重要进展”等等，调用学术搜索工具\n"
+        "\t1. 知识点，例如“量子纠缠”、“黑洞信息悖论”、“人工智能的图灵测试”、“ROP攻击”、“glibc堆分配流程”等等，调用网络搜索工具\n"
+        "\t2. 需要查询的事实，例如“2024年奥运会在哪举办”、“爱因斯坦是什么时候出生的”、“中国的首都是哪里”、“kernel ctf赏金具体规则”等等，也调用网络搜索工具\n"
+        "\t3. 学术研究相关的问题，例如“Transformer模型的核心创新是什么”、“如何提高神经网络的泛化能力”、“最近在二进制安全领域有哪些重要进展”等等，调用学术搜索工具\n"
         "输出内容中只包含工具调用（或无调用）的原因和结果，结果中只罗列收集到的信息，不要添加额外解释或为回复编写草稿。仅输出风格参考OUTPUT_STYLE。"
     ),
     "reply": (
@@ -46,8 +46,7 @@ STEP_SYSTEM_INSTRUCTIONS: dict[str, str] = {
 - 不要只是复述收到的内容，利用你的信息收集能力和系统能力，为群友提供更多的见解和相关信息。当个复读机还不如什么都不说。"""
     ),
     "memory": (
-        "Update long-term memory based on durable user preferences, profile, "
-        "and stable facts from this turn."
+        "更新群聊的long-term memory，包含你对群友的印象、重要事件、讨论话题、热梗等。"
         "保持字数小于2000字"
     ),
 }
@@ -55,6 +54,8 @@ STEP_SYSTEM_INSTRUCTIONS: dict[str, str] = {
 MEMORY_JSON_INSTRUCTION = (
     "Return strict JSON with key 'long_term_memory'. "
     "Keep durable facts and user preferences only."
+    "只保留群聊、对话中的信息，不要保存任务指令。"
+    "使用JSON格式分层次表达记忆内容，禁止使用纯文本形式表达记忆内容。"
 )
 
 URL_SUMMARY_PROMPT_TEMPLATE = (
