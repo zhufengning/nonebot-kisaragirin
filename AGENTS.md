@@ -15,7 +15,7 @@
 - `zfnbot/plugins/kisaragirin_onebot/payload.py`：将消息序列化为 YAML，并构造 `ConversationRequest`。
 - `zfnbot/plugins/kisaragirin_onebot/config.py`：插件配置（模型、分步模型映射、群配置、ops、定时参数、API Key、debug）。
 - `kisaragirin/kisaragirin/agent.py`：Agent 主流程（step0~step5）。
-- `kisaragirin/kisaragirin/tools.py`：内置工具（`read_url`、可选 `web_search`、可选 `scholar_search`）。
+- `kisaragirin/kisaragirin/tools.py`：内置工具（`read_url`、可选 `exa_search`、可选 `web_search`〔优先 Exa，回退 Brave〕、可选 `scholar_search`）。
 - `kisaragirin/kisaragirin/memory.py`：SQLite 记忆与缓存存储。
 - `kisaragirin/kisaragirin/prompts.py`：各步骤提示词文本。
 
@@ -62,6 +62,7 @@
 - 运行期主要配置在 `zfnbot/plugins/kisaragirin_onebot/config.py`。
 - `groups` 即群启用列表与每群 persona/fixed_memory 配置来源。
 - `ops` 为管理指令执行权限白名单（QQ 号）。
+- `exa_api_key` 用于启用 Exa 的 `web_search`；若为空可回退 `brave_search_api_key`。
 - 不再依赖 `.env` 作为插件主配置来源。
 
 ## 日志行为

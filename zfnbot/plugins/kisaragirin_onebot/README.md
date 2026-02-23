@@ -7,7 +7,8 @@
 - 插件配置：`zfnbot/plugins/kisaragirin_onebot/config.py`
 - 主要配置项：
   - `models` / `step_models`：模型与步骤映射
-  - `brave_search_api_key`：Brave Search API Key（为空时不启用 `web_search` 工具）
+  - `exa_api_key`：Exa API Key（启用 `exa_search`，并优先用于 `web_search`）
+  - `brave_search_api_key`：Brave Search API Key（当 `exa_api_key` 为空时，回退用于 `web_search`）
   - `serpapi_api_key`：SerpApi Key（为空时不启用 `scholar_search` 工具）
   - `groups`：群白名单 + 每群 persona
   - `ops`：可执行管理指令的 QQ 号白名单（非 ops 执行会返回 `Access Denied`）

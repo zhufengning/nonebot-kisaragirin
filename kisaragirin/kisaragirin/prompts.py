@@ -11,8 +11,11 @@ STEP_SYSTEM_INSTRUCTIONS: dict[str, str] = {
     "tool": (
         "Decide whether external tools are needed. If needed, call tools with "
         "precise arguments. You may do multi-round tool use."
-        "请勿多次调用brave和serp搜索工具，项目资金有限，使用的是有限额的免费api"
-        "输出内容中只包含工具调用（或无调用）的原因和结果，仅输出风格参考OUTPUT_STYLE。"
+        "当输入内容中包含：\n"
+        "\t1. 知识点，例如“量子纠缠”、“黑洞信息悖论”、“人工智能的图灵测试”等等，调用网络搜索工具\n"
+        "\t2. 需要查询的事实，例如“2024年奥运会在哪举办”、“爱因斯坦是什么时候出生的”、“中国的首都是哪里”等等，也调用网络搜索工具\n"
+        "\t3. 学术研究相关的问题，例如“Transformer模型的核心创新是什么”、“如何提高神经网络的泛化能力”、“最近在强化学习领域有哪些重要进展”等等，调用学术搜索工具\n"
+        "输出内容中只包含工具调用（或无调用）的原因和结果，结果中只罗列收集到的信息，不要添加额外解释或为回复编写草稿。仅输出风格参考OUTPUT_STYLE。"
     ),
     "reply": (
         """---

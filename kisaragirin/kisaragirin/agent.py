@@ -138,6 +138,7 @@ class KisaragiAgent:
             if tools is not None
             else build_default_tools(
                 self._crawl_url_text,
+                exa_api_key=config.exa_api_key,
                 brave_search_api_key=config.brave_search_api_key,
                 serpapi_api_key=config.serpapi_api_key,
             )

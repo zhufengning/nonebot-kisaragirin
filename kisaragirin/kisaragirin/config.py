@@ -53,6 +53,7 @@ class AgentConfig:
     models: Mapping[str, ModelConfig]
     step_models: StepModelIds
     prompts: PromptConfig = field(default_factory=PromptConfig)
+    exa_api_key: str = ""
     brave_search_api_key: str = ""
     serpapi_api_key: str = ""
     memory_db_path: str = ".kisaragirin_memory.sqlite3"

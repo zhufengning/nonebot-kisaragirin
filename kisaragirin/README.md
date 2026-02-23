@@ -8,6 +8,7 @@
 - 每个步骤按 `id` 选择模型，可重复复用同一模型配置
 - `crawl4ai` 为必选依赖（URL 抓取步骤强依赖）
 - 内置短期记忆（上下文）与长期记忆（持久化到 SQLite）
+- 内置工具：`read_url`、`exa_search`（Exa，可选）、`web_search`（Exa/Brave，可选）、`scholar_search`（SerpApi，可选）
 - 同一 `conversation_id` 在进程内串行执行，避免并发读写导致记忆错乱
 - 各步骤指令提示词由包内固定，不对调用者暴露修改入口
 - 处理流程固定为：
@@ -69,6 +70,9 @@ config = AgentConfig.from_model_list(
         memory="gpt4o-mini",
     ),
     prompts=PromptConfig(persona="你是一个专业且可靠的助手。"),
+    exa_api_key="YOUR_EXA_API_KEY",   # 可选，启用 Exa web_search
+    brave_search_api_key="",          # 可选，当 exa_api_key 为空时可用 Brave 回退
+    serpapi_api_key="",               # 可选，启用 scholar_search
 )
 
 with KisaragiAgent(config) as agent:

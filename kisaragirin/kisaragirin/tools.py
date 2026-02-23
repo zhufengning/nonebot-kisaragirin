@@ -10,6 +10,7 @@ from langchain_core.tools import BaseTool, tool
 def build_default_tools(
     fetch_url_content: Callable[[str, int], str],
     *,
+    exa_api_key: str = "",
     brave_search_api_key: str = "",
     serpapi_api_key: str = "",
 ) -> list[BaseTool]:
@@ -20,8 +21,61 @@ def build_default_tools(
         return fetch_url_content(url=url, max_chars=max_chars)
 
     tools: list[BaseTool] = []
+    exa_key = exa_api_key.strip()
     brave_api_key = brave_search_api_key.strip()
-    if brave_api_key:
+    if exa_key:
+
+        def _exa_search_impl(query: str, max_results: int, max_chars_per_result: int) -> str:
+            try:
+                from exa_py import Exa
+            except Exception as exc:
+                return f"Exa SDK is unavailable: {exc}"
+            limit = max(1, min(int(max_results), 20))
+            max_chars = max(200, min(int(max_chars_per_result), 4000))
+            exa = Exa(api_key=exa_key)
+            response = exa.search_and_contents(
+                query,
+                num_results=limit,
+                text={"max_characters": max_chars},
+            )
+            results = getattr(response, "results", None)
+
+            lines: list[str] = []
+            if isinstance(results, list):
+                for idx, item in enumerate(results[:limit], start=1):
+                    title = str(getattr(item, "title", "") or "").strip()
+                    url = str(getattr(item, "url", "") or "").strip()
+                    text = str(getattr(item, "text", "") or "").strip()
+
+                    parts = [f"{idx}."]
+                    if title:
+                        parts.append(title)
+                    if url:
+                        parts.append(f"({url})")
+                    if text:
+                        parts.append(f"- {_compact_text(text, max_chars=260)}")
+                    if len(parts) > 1:
+                        lines.append(" ".join(parts))
+
+            if not lines:
+                return "No concise web search result from Exa."
+            return "\n".join(lines)
+
+        @tool("exa_search")
+        def exa_search(query: str, max_results: int = 5, max_chars_per_result: int = 600) -> str:
+            """Search the web via Exa and return concise results."""
+
+            return _exa_search_impl(query, max_results, max_chars_per_result)
+
+        @tool("web_search")
+        def web_search(query: str, max_results: int = 5, max_chars_per_result: int = 600) -> str:
+            """Alias of exa_search for backward compatibility."""
+
+            return _exa_search_impl(query, max_results, max_chars_per_result)
+
+        tools.append(exa_search)
+        tools.append(web_search)
+    elif brave_api_key:
 
         @tool("web_search")
         def web_search(query: str, max_results: int = 5) -> str:
@@ -154,3 +208,10 @@ def _extract_cited_by(item: dict[str, Any]) -> int | None:
             if isinstance(total, int):
                 return total
     return None
+
+
+def _compact_text(text: str, *, max_chars: int) -> str:
+    normalized = " ".join(str(text).split())
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max_chars - 3].rstrip() + "..."

@@ -24,6 +24,7 @@ class PluginConfig:
     step_models: StepModelIds
     groups: dict[int, GroupConfig]
     ops: tuple[int, ...] = ()
+    exa_api_key: str = ""
     brave_search_api_key: str = ""
     serpapi_api_key: str = ""
     timing: ReplyTimingConfig = field(default_factory=ReplyTimingConfig)
@@ -33,6 +34,7 @@ class PluginConfig:
 
 PLUGIN_CONFIG = PluginConfig(
     debug=True,
+    exa_api_key="",
     brave_search_api_key="",
     serpapi_api_key="",
     models=(
