@@ -223,5 +223,6 @@ __marimo__/
 *.sqlite3
 .*
 !.gitignore
+!.env.example
 zfnbot/plugins/kisaragirin_onebot/config.py
 up.sh

@@ -1,7 +1,7 @@
 [project]
-name = "bot_renew"
+name = "nonebot-kisaragirin"
 version = "0.1.0"
-description = "bot_renew"
+description = "nonebot-kisaragirin是一个nonebot插件，提供了一个基于大语言模型的智能聊天助手，能够在群聊中与用户进行自然语言交互，提供信息查询、图片描述、工具调用等功能。"
 readme = "README.md"
 requires-python = ">=3.13, <3.14"
 dependencies = [
