@@ -226,3 +226,4 @@ __marimo__/
 !.env.example
 zfnbot/plugins/kisaragirin_onebot/config.py
 up.sh
+down.sh

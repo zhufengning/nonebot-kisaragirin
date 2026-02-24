@@ -92,6 +92,14 @@ with KisaragiAgent(config) as agent:
 response = await agent.arun(request)
 ```
 
+如需“先拿到 step4 回复，再等待 step5 记忆落库完成”，可用：
+
+```python
+response, done = await agent.arun_reply_first(request)
+print(response.reply)  # 可先发送给用户
+await done            # 等待 step5 完成
+```
+
 ## 返回值
 
 `ConversationResponse` 包含：
@@ -109,4 +117,4 @@ import logging
 logging.basicConfig(level=logging.INFO)
 ```
 
-每次完整回复结束后会输出一条性能报告日志，包含 `STEP-0` 到 `STEP-5` 各步骤耗时及总耗时。
+每次完整回复结束后会输出一条性能报告日志，包含 `STEP-0(prepare)` 到 `STEP-5(memory)` 各步骤耗时及总耗时。

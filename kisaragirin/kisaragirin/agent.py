@@ -125,6 +125,14 @@ class _BackgroundAsyncRunner:
 
 class KisaragiAgent:
     _PERF_STEP_ORDER = ("STEP-0", "STEP-1", "STEP-2", "STEP-3", "STEP-4", "STEP-5")
+    _PERF_STEP_LABELS = {
+        "STEP-0": "prepare",
+        "STEP-1": "urls",
+        "STEP-2": "vision",
+        "STEP-3": "tools",
+        "STEP-4": "reply",
+        "STEP-5": "memory",
+    }
 
     def __init__(self, config: AgentConfig, tools: Sequence[BaseTool] | None = None) -> None:
         self._config = config
@@ -160,13 +168,7 @@ class KisaragiAgent:
     def run(self, request: ConversationRequest) -> ConversationResponse:
         conversation_lock = self._get_conversation_lock(request.conversation_id)
         with conversation_lock:
-            initial_state: AgentState = {
-                "conversation_id": request.conversation_id,
-                "user_message": request.message,
-                "images": list(request.images),
-                "debug": request.debug,
-                "step_attachments": {},
-            }
+            initial_state = self._build_initial_state(request)
             started_at = time.perf_counter()
             result = self._graph.invoke(initial_state)
             total_ms = (time.perf_counter() - started_at) * 1000
@@ -183,6 +185,89 @@ class KisaragiAgent:
     async def arun(self, request: ConversationRequest) -> ConversationResponse:
         # Keep event loop responsive in async callers by running sync graph in a worker thread.
         return await asyncio.to_thread(self.run, request)
+
+    @staticmethod
+    def _build_initial_state(request: ConversationRequest) -> AgentState:
+        return {
+            "conversation_id": request.conversation_id,
+            "user_message": request.message,
+            "images": list(request.images),
+            "debug": request.debug,
+            "step_attachments": {},
+        }
+
+    @staticmethod
+    def _resolve_future(
+        loop: asyncio.AbstractEventLoop,
+        future: asyncio.Future[Any],
+        *,
+        result: Any | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        def _set() -> None:
+            if future.done():
+                return
+            if error is not None:
+                future.set_exception(error)
+                return
+            future.set_result(result)
+
+        try:
+            loop.call_soon_threadsafe(_set)
+        except RuntimeError:
+            # Event loop may already be closed during shutdown.
+            return
+
+    async def arun_reply_first(
+        self, request: ConversationRequest
+    ) -> tuple[ConversationResponse, asyncio.Future[None]]:
+        loop = asyncio.get_running_loop()
+        reply_future: asyncio.Future[ConversationResponse] = loop.create_future()
+        done_future: asyncio.Future[None] = loop.create_future()
+        worker = Thread(
+            target=self._run_reply_first_worker,
+            args=(request, loop, reply_future, done_future),
+            name=f"kisaragirin-reply-first-{request.conversation_id}",
+            daemon=True,
+        )
+        worker.start()
+        response = await reply_future
+        return response, done_future
+
+    def _run_reply_first_worker(
+        self,
+        request: ConversationRequest,
+        loop: asyncio.AbstractEventLoop,
+        reply_future: asyncio.Future[ConversationResponse],
+        done_future: asyncio.Future[None],
+    ) -> None:
+        conversation_lock = self._get_conversation_lock(request.conversation_id)
+        try:
+            with conversation_lock:
+                state = self._build_initial_state(request)
+                started_at = time.perf_counter()
+                state = self._with_step_timing("STEP-0", self._step0_prepare)(state)
+                state = self._with_step_timing("STEP-1", self._step1_urls)(state)
+                state = self._with_step_timing("STEP-2", self._step2_vision)(state)
+                state = self._with_step_timing("STEP-3", self._step3_tools)(state)
+                state = self._with_step_timing("STEP-4", self._step4_reply)(state)
+
+                reply = ConversationResponse(reply=str(state.get("reply", "")))
+                self._resolve_future(loop, reply_future, result=reply)
+
+                state = self._with_step_timing("STEP-5", self._step5_memory)(state)
+                total_ms = (time.perf_counter() - started_at) * 1000
+                self._log_performance_report(
+                    conversation_id=request.conversation_id,
+                    step_durations_ms=state.get("step_durations_ms"),
+                    total_ms=total_ms,
+                )
+        except Exception as exc:
+            self._resolve_future(loop, reply_future, error=exc)
+            self._resolve_future(loop, done_future, error=exc)
+            return
+
+        self._resolve_future(loop, done_future, result=None)
 
     def clear_conversation(self, conversation_id: str) -> None:
         conversation_lock = self._get_conversation_lock(conversation_id)
@@ -458,7 +543,14 @@ class KisaragiAgent:
         used_tool = False
 
         for round_idx in range(1, self._config.max_tool_rounds + 1):
-            ai_message = tool_model.invoke(messages)
+            raw_ai_message = tool_model.invoke(messages)
+            ai_message = raw_ai_message
+            if isinstance(raw_ai_message, AIMessage):
+                # Avoid replaying Responses API item references when store=False.
+                ai_message = AIMessage(
+                    content=self._message_to_text(raw_ai_message.content),
+                    tool_calls=raw_ai_message.tool_calls,
+                )
             messages.append(ai_message)
 
             tool_calls = ai_message.tool_calls if isinstance(ai_message, AIMessage) else []
@@ -539,6 +631,29 @@ class KisaragiAgent:
             parsed.get("long_term_memory"),
             fallback=state.get("long_term_memory", ""),
         )
+        memory_compacted = False
+        if len(new_long_term) > 2000:
+            compact_msg = memory_model.invoke(
+                [
+                    SystemMessage(content=self._system_prompt("memory")),
+                    HumanMessage(
+                        content=(
+                            f"{MEMORY_JSON_INSTRUCTION}\n\n"
+                            "你的记忆太长了，需要精简到2000字符以内。\n\n"
+                            "[CURRENT-LONG-TERM-MEMORY]\n"
+                            f"{new_long_term}"
+                        )
+                    ),
+                ]
+            )
+            compact_parsed = self._parse_memory_json(self._message_to_text(compact_msg.content))
+            new_long_term = self._normalize_memory_text(
+                compact_parsed.get("long_term_memory"),
+                fallback=new_long_term,
+            )
+            if len(new_long_term) > 2000:
+                new_long_term = new_long_term[:2000]
+            memory_compacted = True
         user_message_for_memory = self._build_short_term_user_message(state)
         self._memory_store.persist_turn(
             conversation_id=state["conversation_id"],
@@ -550,6 +665,7 @@ class KisaragiAgent:
         attachment = (
             "[STEP-5-MEMORY-UPDATE]\n"
             "long_term_memory_updated=true\n"
+            f"long_term_memory_compacted={'true' if memory_compacted else 'false'}\n"
             "short_term_memory_appended=user+assistant"
         )
         self._log_step_debug(
@@ -707,11 +823,13 @@ class KisaragiAgent:
         durations = step_durations_ms if isinstance(step_durations_ms, dict) else {}
         parts: list[str] = []
         for step_name in self._PERF_STEP_ORDER:
+            step_label = self._PERF_STEP_LABELS.get(step_name, step_name.lower())
+            step_display_name = f"{step_name}({step_label})"
             value = durations.get(step_name)
             if isinstance(value, (int, float)):
-                parts.append(f"{step_name}={float(value):.2f}ms")
+                parts.append(f"{step_display_name}={float(value):.2f}ms")
             else:
-                parts.append(f"{step_name}=n/a")
+                parts.append(f"{step_display_name}=n/a")
         self._log_info(
             "[PERF][conversation=%s] total=%.2fms %s",
             conversation_id,

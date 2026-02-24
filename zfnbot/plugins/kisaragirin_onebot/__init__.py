@@ -678,8 +678,9 @@ async def _try_reply(
         )
 
     sent = False
+    finalize_future: asyncio.Future[None] | None = None
     try:
-        response = await _get_group_agent(group_id).arun(request)
+        response, finalize_future = await _get_group_agent(group_id).arun_reply_first(request)
         reply_raw = response.reply if isinstance(response.reply, str) else str(response.reply or "")
         logger.debug(
             "reply generated trigger={} group={} chars={}",
@@ -712,12 +713,6 @@ async def _try_reply(
             len(queue_snapshot),
         )
 
-        async with state.lock:
-            state.replying = False
-            if state.queue:
-                _refresh_workers(group_id, state, state.queue_version)
-            else:
-                state.last_message_at = 0.0
         sent = True
         return True
     except asyncio.CancelledError:
@@ -727,21 +722,29 @@ async def _try_reply(
         logger.exception("kisaragirin run failed in group {}", group_id)
         return False
     finally:
-        if not sent:
-            async with state.lock:
-                if queue_snapshot:
-                    logger.info(
-                        "reply not sent, requeue snapshot trigger={} group={} snapshot_size={} current_queue_size={}",
-                        trigger,
-                        group_id,
-                        len(queue_snapshot),
-                        len(state.queue),
-                    )
-                    state.queue.extend(queue_snapshot)
-                    state.queue.sort(key=lambda item: (item.created_at, item.sequence))
-                state.replying = False
-                if state.queue:
-                    _refresh_workers(group_id, state, state.queue_version)
+        if finalize_future is not None:
+            try:
+                await asyncio.shield(finalize_future)
+            except asyncio.CancelledError:
+                logger.warning("wait step5 finalize cancelled in group {}", group_id)
+            except Exception:
+                logger.exception("step5 finalize failed in group {}", group_id)
+        async with state.lock:
+            if not sent and queue_snapshot:
+                logger.info(
+                    "reply not sent, requeue snapshot trigger={} group={} snapshot_size={} current_queue_size={}",
+                    trigger,
+                    group_id,
+                    len(queue_snapshot),
+                    len(state.queue),
+                )
+                state.queue.extend(queue_snapshot)
+                state.queue.sort(key=lambda item: (item.created_at, item.sequence))
+            state.replying = False
+            if state.queue:
+                _refresh_workers(group_id, state, state.queue_version)
+            else:
+                state.last_message_at = 0.0
 
 
 async def _mention_quiet_worker(group_id: int, expected_queue_version: int) -> None:

@@ -31,6 +31,8 @@
   - 静默 `idle_start_minutes` 后进入每分钟一次概率抽卡，概率递增，期望在 `idle_expect_minutes` 左右触发。
 - 回复执行逻辑：
   - 开始回复时先将当前队列快照并出队（后续新消息不影响本轮）。
+  - step4 产出回复文本后会先发送到群里；step5 记忆写回在后台继续执行。
+  - 在 step5 完成前，当前群仍保持 replying 状态，下一次回复触发会继续等待/跳过。
   - 若回复失败，会把快照消息回灌队列，避免丢消息。
   - 若回复成功，不再“全量清空队列”；新进队的消息继续等待下一轮触发。
   - 若当前已有回复在执行：`@` 触发会等待，非 `@` 触发会跳过。
@@ -69,7 +71,7 @@
 
 - `bot.py` 自定义了日志过滤：`kisaragirin*` 与 `zfnbot*` 默认 DEBUG，其它模块（含 nonebot）默认 WARNING。
 - 打开 `PLUGIN_CONFIG.debug=True` 后，Agent 的 step 调试内容会通过 `kisaragirin.agent` 日志输出。
-- 每次完整回复结束后，`kisaragirin.agent` 会统一输出一条性能日志，包含 `STEP-0` 到 `STEP-5` 各步耗时和总耗时。
+- 每次完整回复结束后，`kisaragirin.agent` 会统一输出一条性能日志，包含 `STEP-0(prepare)` 到 `STEP-5(memory)` 各步耗时和总耗时。
 
 ## 运行方式（本地）
 
