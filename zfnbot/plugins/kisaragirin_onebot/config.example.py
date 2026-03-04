@@ -23,6 +23,7 @@ class PluginConfig:
     models: tuple[ModelConfig, ...]
     step_models: StepModelIds
     groups: dict[int, GroupConfig]
+    short_term_turn_window: int = 12
     ops: tuple[int, ...] = ()
     exa_api_key: str = ""
     brave_search_api_key: str = ""
@@ -33,6 +34,7 @@ class PluginConfig:
 
 
 PLUGIN_CONFIG = PluginConfig(
+    short_term_turn_window=12,
     debug=True,
     exa_api_key="",
     brave_search_api_key="",

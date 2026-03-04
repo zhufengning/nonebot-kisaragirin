@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 
@@ -64,6 +65,23 @@ class SQLiteMemoryStore:
                     summary TEXT NOT NULL,
                     updated_at REAL NOT NULL
                 )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS short_term_image_refs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    user_created_at REAL NOT NULL,
+                    image_index INTEGER NOT NULL,
+                    image_sha256 TEXT NOT NULL
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_short_term_image_refs_conv_time
+                ON short_term_image_refs (conversation_id, user_created_at)
                 """
             )
             self._conn.commit()
@@ -144,6 +162,7 @@ class SQLiteMemoryStore:
         long_term_memory: str,
         user_message: str,
         assistant_reply: str,
+        user_image_hashes: Sequence[str] | None = None,
     ) -> None:
         conversation_id = str(conversation_id)
         long_term_memory = str(long_term_memory)
@@ -177,10 +196,109 @@ class SQLiteMemoryStore:
                     """,
                     (conversation_id, "assistant", assistant_reply, assistant_time),
                 )
+                for image_index, image_hash in enumerate(user_image_hashes or (), start=1):
+                    normalized_hash = str(image_hash).strip().lower()
+                    if not normalized_hash:
+                        continue
+                    self._conn.execute(
+                        """
+                        INSERT INTO short_term_image_refs (
+                            conversation_id,
+                            user_created_at,
+                            image_index,
+                            image_sha256
+                        )
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (conversation_id, now, image_index, normalized_hash),
+                    )
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
                 raise
+
+    def get_short_term_image_hashes(self, conversation_id: str, turn_window: int) -> list[str]:
+        turn_limit = max(1, turn_window)
+        with self._lock:
+            turn_rows = self._conn.execute(
+                """
+                SELECT created_at
+                FROM short_term_memory
+                WHERE conversation_id = ? AND role = 'user'
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (conversation_id, turn_limit),
+            ).fetchall()
+
+            if not turn_rows:
+                return []
+
+            turn_times = [float(row["created_at"]) for row in turn_rows]
+            placeholders = ",".join("?" for _ in turn_times)
+            rows = self._conn.execute(
+                f"""
+                SELECT id, user_created_at, image_index, image_sha256
+                FROM short_term_image_refs
+                WHERE conversation_id = ?
+                  AND user_created_at IN ({placeholders})
+                ORDER BY user_created_at ASC, image_index ASC, id ASC
+                """,
+                (conversation_id, *turn_times),
+            ).fetchall()
+
+        if not rows:
+            return []
+        hashes: list[str] = []
+        seen_hashes: set[str] = set()
+        for row in rows:
+            value = str(row["image_sha256"]).strip().lower()
+            if not value or value in seen_hashes:
+                continue
+            seen_hashes.add(value)
+            hashes.append(value)
+        return hashes
+
+    def get_short_term_image_refs(
+        self, conversation_id: str, turn_window: int
+    ) -> dict[float, dict[int, str]]:
+        turn_limit = max(1, turn_window)
+        with self._lock:
+            turn_rows = self._conn.execute(
+                """
+                SELECT created_at
+                FROM short_term_memory
+                WHERE conversation_id = ? AND role = 'user'
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (conversation_id, turn_limit),
+            ).fetchall()
+            if not turn_rows:
+                return {}
+
+            turn_times = [float(row["created_at"]) for row in turn_rows]
+            placeholders = ",".join("?" for _ in turn_times)
+            rows = self._conn.execute(
+                f"""
+                SELECT user_created_at, image_index, image_sha256
+                FROM short_term_image_refs
+                WHERE conversation_id = ?
+                  AND user_created_at IN ({placeholders})
+                ORDER BY user_created_at ASC, image_index ASC, id ASC
+                """,
+                (conversation_id, *turn_times),
+            ).fetchall()
+
+        refs: dict[float, dict[int, str]] = {}
+        for row in rows:
+            turn_time = float(row["user_created_at"])
+            image_index = int(row["image_index"])
+            image_hash = str(row["image_sha256"]).strip().lower()
+            if not image_hash:
+                continue
+            refs.setdefault(turn_time, {})[image_index] = image_hash
+        return refs
 
     def clear_conversation(self, conversation_id: str) -> None:
         with self._lock:
@@ -192,12 +310,20 @@ class SQLiteMemoryStore:
                 "DELETE FROM long_term_memory WHERE conversation_id = ?",
                 (conversation_id,),
             )
+            self._conn.execute(
+                "DELETE FROM short_term_image_refs WHERE conversation_id = ?",
+                (conversation_id,),
+            )
             self._conn.commit()
 
     def clear_short_term(self, conversation_id: str) -> None:
         with self._lock:
             self._conn.execute(
                 "DELETE FROM short_term_memory WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            self._conn.execute(
+                "DELETE FROM short_term_image_refs WHERE conversation_id = ?",
                 (conversation_id,),
             )
             self._conn.commit()

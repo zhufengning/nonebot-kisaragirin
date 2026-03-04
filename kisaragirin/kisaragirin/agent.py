@@ -53,7 +53,8 @@ URL_PATTERN = re.compile(
     )
     """
 )
-IMAGE_SHA256_PATTERN = re.compile(r"\[image-sha256:([0-9a-fA-F]{64})\]")
+LEGACY_IMAGE_SHA256_PATTERN = re.compile(r"\[image-sha256:([0-9a-fA-F]{64})\]")
+IMAGE_ALIAS_PATTERN = re.compile(r"\[image-(\d+)\]")
 
 _CONVERSATION_LOCKS: dict[str, Lock] = {}
 _CONVERSATION_LOCKS_GUARD = Lock()
@@ -246,16 +247,21 @@ class KisaragiAgent:
             with conversation_lock:
                 state = self._build_initial_state(request)
                 started_at = time.perf_counter()
-                state = self._with_step_timing("STEP-0", self._step0_prepare)(state)
-                state = self._with_step_timing("STEP-1", self._step1_urls)(state)
-                state = self._with_step_timing("STEP-2", self._step2_vision)(state)
-                state = self._with_step_timing("STEP-3", self._step3_tools)(state)
-                state = self._with_step_timing("STEP-4", self._step4_reply)(state)
+                for step_name, step_fn in (
+                    ("STEP-0", self._step0_prepare),
+                    ("STEP-1", self._step1_urls),
+                    ("STEP-2", self._step2_vision),
+                    ("STEP-3", self._step3_tools),
+                    ("STEP-4", self._step4_reply),
+                ):
+                    updates = self._with_step_timing(step_name, step_fn)(state)
+                    state = {**state, **updates}
 
                 reply = ConversationResponse(reply=str(state.get("reply", "")))
                 self._resolve_future(loop, reply_future, result=reply)
 
-                state = self._with_step_timing("STEP-5", self._step5_memory)(state)
+                updates = self._with_step_timing("STEP-5", self._step5_memory)(state)
+                state = {**state, **updates}
                 total_ms = (time.perf_counter() - started_at) * 1000
                 self._log_performance_report(
                     conversation_id=request.conversation_id,
@@ -373,14 +379,21 @@ class KisaragiAgent:
         normalized_message, url_aliases = self._replace_urls_with_aliases(state["user_message"])
         image_aliases = [f"[image-{idx}]" for idx, _ in enumerate(state.get("images") or [], start=1)]
         image_hashes = [self._compute_image_sha256(image) for image in (state.get("images") or [])]
-        long_term_memory = self._memory_store.get_long_term(conversation_id)
+        long_term_memory_raw = self._memory_store.get_long_term(conversation_id)
+        long_term_memory = self._replace_legacy_image_hash_aliases(long_term_memory_raw)
         short_term_messages = self._memory_store.get_short_term(
             conversation_id=conversation_id,
             turn_window=self._config.short_term_turn_window,
         )
-        short_term_context = self._format_short_term_context(short_term_messages)
+        short_term_image_hashes = self._memory_store.get_short_term_image_hashes(
+            conversation_id=conversation_id,
+            turn_window=self._config.short_term_turn_window,
+        )
+        short_term_image_refs = self._memory_store.get_short_term_image_refs(
+            conversation_id=conversation_id,
+            turn_window=self._config.short_term_turn_window,
+        )
         short_term_urls = self._extract_short_term_urls(short_term_messages)
-        short_term_image_hashes = self._extract_short_term_image_hashes(short_term_messages)
         short_term_url_aliases = {
             f"[short-url-{idx}]": url for idx, url in enumerate(short_term_urls, start=1)
         }
@@ -388,7 +401,15 @@ class KisaragiAgent:
             f"[short-image-{idx}]": image_hash
             for idx, image_hash in enumerate(short_term_image_hashes, start=1)
         }
-        image_alias_text = self._format_image_alias_text(image_aliases, image_hashes)
+        short_term_hash_to_alias = {
+            image_hash: alias for alias, image_hash in short_term_image_aliases.items()
+        }
+        short_term_context = self._format_short_term_context(
+            short_term_messages,
+            short_term_image_refs=short_term_image_refs,
+            short_term_hash_to_alias=short_term_hash_to_alias,
+        )
+        image_alias_text = self._format_image_alias_text(image_aliases)
         short_term_url_alias_text = ", ".join(short_term_url_aliases.keys()) or "(none)"
         short_term_image_alias_text = ", ".join(short_term_image_aliases.keys()) or "(none)"
 
@@ -513,7 +534,7 @@ class KisaragiAgent:
                 description_by_hash=description_by_hash,
             )
             alias = image_aliases[idx - 1] if idx - 1 < len(image_aliases) else f"[image-{idx}]"
-            blocks.append(f"{idx}. {alias} [sha256:{image_hash or 'unknown'}]\n{description}")
+            blocks.append(f"{idx}. {alias}\n{description}")
 
         if short_term_image_aliases:
             blocks.append("[STEP-2-SHORT-TERM-IMAGE-DESCRIPTIONS]")
@@ -523,7 +544,7 @@ class KisaragiAgent:
                     description = self._memory_store.get_image_description(image_hash)
                 if description is None:
                     description = "(description cache miss)"
-                blocks.append(f"{idx}. {alias} [sha256:{image_hash}]\n{description}")
+                blocks.append(f"{idx}. {alias}\n{description}")
 
         appendix = "\n\n".join(blocks)
         self._log_step_debug(state, "STEP-2", appendix)
@@ -654,12 +675,12 @@ class KisaragiAgent:
             if len(new_long_term) > 2000:
                 new_long_term = new_long_term[:2000]
             memory_compacted = True
-        user_message_for_memory = self._build_short_term_user_message(state)
         self._memory_store.persist_turn(
             conversation_id=state["conversation_id"],
             long_term_memory=new_long_term,
-            user_message=user_message_for_memory,
+            user_message=str(state.get("user_message", "")),
             assistant_reply=state.get("reply", ""),
+            user_image_hashes=state.get("image_hashes") or [],
         )
 
         attachment = (
@@ -959,16 +980,6 @@ class KisaragiAgent:
             return ("\n\n".join(sections))+"\n---\n"
         return f"You are in step '{step}'.\n---\n"
 
-    def _build_short_term_user_message(self, state: AgentState) -> str:
-        user_message = str(state.get("user_message", ""))
-        image_aliases = state.get("image_aliases") or []
-        image_hashes = state.get("image_hashes") or []
-        for idx, alias in enumerate(image_aliases):
-            image_hash = image_hashes[idx] if idx < len(image_hashes) else ""
-            if image_hash:
-                user_message = user_message.replace(alias, f"[image-sha256:{image_hash}]")
-        return user_message
-
     @staticmethod
     def _compute_image_sha256(image: ImageInput) -> str:
         raw = KisaragiAgent._decode_image_bytes(image)
@@ -994,13 +1005,77 @@ class KisaragiAgent:
         return None
 
     @staticmethod
-    def _format_short_term_context(messages: list[ShortTermMessage]) -> str:
+    def _format_short_term_context(
+        messages: list[ShortTermMessage],
+        *,
+        short_term_image_refs: dict[float, dict[int, str]] | None = None,
+        short_term_hash_to_alias: dict[str, str] | None = None,
+    ) -> str:
         if not messages:
             return "(empty)"
         lines = []
         for idx, item in enumerate(messages, start=1):
-            lines.append(f"{idx}. [{item.role}] {item.content}")
+            content = KisaragiAgent._replace_legacy_image_hash_aliases(
+                item.content,
+                hash_to_alias=short_term_hash_to_alias,
+            )
+            refs_by_index = (
+                short_term_image_refs.get(item.created_at, {})
+                if item.role == "user" and short_term_image_refs
+                else {}
+            )
+            if refs_by_index and short_term_hash_to_alias:
+                content = KisaragiAgent._replace_image_aliases_with_short_aliases(
+                    content,
+                    refs_by_index=refs_by_index,
+                    hash_to_alias=short_term_hash_to_alias,
+                )
+            lines.append(f"{idx}. [{item.role}] {content}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _replace_legacy_image_hash_aliases(
+        text: str,
+        *,
+        hash_to_alias: dict[str, str] | None = None,
+    ) -> str:
+        if not text:
+            return text
+        generated_aliases: dict[str, str] = {}
+        next_index = 1
+
+        def _replace(match: re.Match[str]) -> str:
+            nonlocal next_index
+            image_hash = match.group(1).lower()
+            if hash_to_alias and image_hash in hash_to_alias:
+                return hash_to_alias[image_hash]
+            alias = generated_aliases.get(image_hash)
+            if alias is None:
+                alias = f"[image-{next_index}]"
+                generated_aliases[image_hash] = alias
+                next_index += 1
+            return alias
+
+        return LEGACY_IMAGE_SHA256_PATTERN.sub(_replace, text)
+
+    @staticmethod
+    def _replace_image_aliases_with_short_aliases(
+        text: str,
+        *,
+        refs_by_index: dict[int, str],
+        hash_to_alias: dict[str, str],
+    ) -> str:
+        if not text:
+            return text
+
+        def _replace(match: re.Match[str]) -> str:
+            image_index = int(match.group(1))
+            image_hash = refs_by_index.get(image_index, "").lower()
+            if not image_hash:
+                return match.group(0)
+            return hash_to_alias.get(image_hash, match.group(0))
+
+        return IMAGE_ALIAS_PATTERN.sub(_replace, text)
 
     @staticmethod
     def _extract_short_term_urls(messages: list[ShortTermMessage]) -> list[str]:
@@ -1020,32 +1095,10 @@ class KisaragiAgent:
         return urls
 
     @staticmethod
-    def _extract_short_term_image_hashes(messages: list[ShortTermMessage]) -> list[str]:
-        seen: set[str] = set()
-        hashes: list[str] = []
-        for item in messages:
-            if item.role != "user":
-                continue
-            for match in IMAGE_SHA256_PATTERN.finditer(item.content):
-                value = match.group(1).lower()
-                if value in seen:
-                    continue
-                seen.add(value)
-                hashes.append(value)
-        return hashes
-
-    @staticmethod
-    def _format_image_alias_text(image_aliases: list[str], image_hashes: list[str]) -> str:
+    def _format_image_alias_text(image_aliases: list[str]) -> str:
         if not image_aliases:
             return "(none)"
-        parts: list[str] = []
-        for idx, alias in enumerate(image_aliases):
-            image_hash = image_hashes[idx] if idx < len(image_hashes) else ""
-            if image_hash:
-                parts.append(f"{alias}(sha256:{image_hash})")
-            else:
-                parts.append(f"{alias}(sha256:unknown)")
-        return ", ".join(parts)
+        return ", ".join(image_aliases)
 
     @staticmethod
     def _message_to_text(content: Any) -> str:

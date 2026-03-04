@@ -11,6 +11,7 @@
   - `brave_search_api_key`：Brave Search API Key（当 `exa_api_key` 为空时，回退用于 `web_search`）
   - `serpapi_api_key`：SerpApi Key（为空时不启用 `scholar_search` 工具）
   - `groups`：群白名单 + 每群 persona
+  - `short_term_turn_window`：短期记忆保留轮数（按 user+assistant 成对窗口）
   - `ops`：可执行管理指令的 QQ 号白名单（非 ops 执行会返回 `Access Denied`）
   - `timing.mention_quiet_seconds`：收到消息后静默 N 秒触发 @ 回复检查
   - `timing.idle_start_minutes`：群聊静默 M 分钟后进入“抽卡回复”
@@ -38,10 +39,10 @@
 
 `kisaragirin` 侧做了以下持久化：
 
-- 短期记忆：保存 user/assistant 轮次；user 文本中的图片占位会转成 `[image-sha256:<hash>]`。
+- 短期记忆：保存 user/assistant 轮次；user 文本中的图片占位保持为 `[image-数字]`。
 - URL 总结缓存：`url -> summary`。
 - 图片描述缓存：`sha256 -> description`。
-- 构建新一轮上下文时，会把短期记忆中的 URL/图片重新编号，并在 URL 总结区、图片描述区补齐对应内容。
+- 构建新一轮上下文时，会把短期记忆中的 URL/图片重新编号，并在 URL 总结区、图片描述区补齐对应内容（展示仅保留图片编号，不显示 sha256）。
 
 ## 指令
 

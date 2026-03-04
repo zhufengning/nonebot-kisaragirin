@@ -100,6 +100,7 @@ def _get_group_agent(group_id: int) -> KisaragiAgent:
         brave_search_api_key=PLUGIN_CONFIG.brave_search_api_key,
         serpapi_api_key=PLUGIN_CONFIG.serpapi_api_key,
         memory_db_path=PLUGIN_CONFIG.memory_db_path,
+        short_term_turn_window=PLUGIN_CONFIG.short_term_turn_window,
     )
     agent = KisaragiAgent(agent_config)
     _GROUP_AGENTS[group_id] = agent
