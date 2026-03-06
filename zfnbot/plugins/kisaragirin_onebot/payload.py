@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import count
@@ -9,7 +11,7 @@ import yaml
 from kisaragirin import ConversationRequest, ImageInput
 
 
-SegmentType = Literal["text", "image", "reply"]
+SegmentType = Literal["text", "image", "reply", "at"]
 
 
 @dataclass(slots=True)
@@ -20,6 +22,8 @@ class MessageSegmentData:
     image_name: str | None = None
     reply: MessageData | None = None
     reply_message_id: int | str | None = None
+    at_user_id: int | None = None
+    at_name: str = ""
 
 
 @dataclass(slots=True)
@@ -42,8 +46,15 @@ def build_agent_request(
 ) -> ConversationRequest:
     images: list[ImageInput] = []
     image_index = count(1)
+    image_hash_to_alias: dict[str, str] = {}
     payload_messages = [
-        _serialize_message(message, image_index=image_index, images=images) for message in messages
+        _serialize_message(
+            message,
+            image_index=image_index,
+            images=images,
+            image_hash_to_alias=image_hash_to_alias,
+        )
+        for message in messages
     ]
 
     payload = {
@@ -69,23 +80,49 @@ def _serialize_message(
     *,
     image_index: count,
     images: list[ImageInput],
+    image_hash_to_alias: dict[str, str],
 ) -> dict[str, object]:
     payload_segments: list[dict[str, object]] = []
     merged_blocks: list[str] = []
 
     for segment in message.segments:
         if segment.type == "text":
-            payload_segments.append(
-                {
-                    "type": "text",
-                    "text": segment.text,
-                }
-            )
+            if payload_segments and payload_segments[-1].get("type") == "text":
+                previous = payload_segments[-1].get("text", "")
+                payload_segments[-1]["text"] = f"{previous}{segment.text}"
+            else:
+                payload_segments.append(
+                    {
+                        "type": "text",
+                        "text": segment.text,
+                    }
+                )
             merged_blocks.append(segment.text)
             continue
 
+        if segment.type == "at":
+            qq = str(segment.at_user_id) if segment.at_user_id is not None else ""
+            name = str(segment.at_name or "").strip()
+            text = segment.text or (f"@{name}" if name else "@(unknown)")
+            item: dict[str, object] = {
+                "type": "at",
+                "text": text,
+            }
+            if qq:
+                item["qq"] = qq
+            if name:
+                item["name"] = name
+            payload_segments.append(item)
+            merged_blocks.append(text)
+            continue
+
         if segment.type == "image" and segment.image is not None:
-            alias = f"[image-{next(image_index)}]"
+            alias = _get_or_create_image_alias(
+                segment.image,
+                image_index=image_index,
+                images=images,
+                image_hash_to_alias=image_hash_to_alias,
+            )
             item: dict[str, object] = {
                 "type": "image",
                 "image": alias,
@@ -94,7 +131,6 @@ def _serialize_message(
                 item["name"] = segment.image_name
             payload_segments.append(item)
             merged_blocks.append(alias)
-            images.append(segment.image)
             continue
 
         if segment.type == "reply":
@@ -105,17 +141,22 @@ def _serialize_message(
                 payload_segments.append(
                     {
                         "type": "reply",
-                        "message_id": reply_message_id or "(unknown)",
-                        "message": "(unavailable)",
+                        "reply_to_message_id": reply_message_id or "(unknown)",
+                        "reply_to_message": "(unavailable)",
                     }
                 )
             else:
-                nested = _serialize_message(segment.reply, image_index=image_index, images=images)
+                nested = _serialize_message(
+                    segment.reply,
+                    image_index=image_index,
+                    images=images,
+                    image_hash_to_alias=image_hash_to_alias,
+                )
                 payload_segments.append(
                     {
                         "type": "reply",
-                        "message_id": reply_message_id or str(segment.reply.message_id),
-                        "message": nested,
+                        "reply_to_message_id": reply_message_id or str(segment.reply.message_id),
+                        "reply_to_message": nested,
                     }
                 )
             merged_blocks.append(
@@ -136,3 +177,33 @@ def _serialize_message(
     if message.has_unknown_segment:
         payload["merged_text"] = "".join(merged_blocks)
     return payload
+
+
+def _image_sha256(image: ImageInput) -> str:
+    raw = str(getattr(image, "base64_data", "") or "").strip()
+    if not raw:
+        return ""
+    try:
+        decoded = base64.b64decode(raw, validate=False)
+    except Exception:
+        return ""
+    return hashlib.sha256(decoded).hexdigest()
+
+
+def _get_or_create_image_alias(
+    image: ImageInput,
+    *,
+    image_index: count,
+    images: list[ImageInput],
+    image_hash_to_alias: dict[str, str],
+) -> str:
+    image_hash = _image_sha256(image)
+    if image_hash:
+        existing = image_hash_to_alias.get(image_hash)
+        if existing is not None:
+            return existing
+    alias = f"[image-{next(image_index)}]"
+    images.append(image)
+    if image_hash:
+        image_hash_to_alias[image_hash] = alias
+    return alias

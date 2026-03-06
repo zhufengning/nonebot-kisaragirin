@@ -66,10 +66,12 @@ class AgentState(TypedDict, total=False):
     user_message_normalized: str
     images: list[ImageInput]
     url_aliases: dict[str, str]
+    url_to_alias: dict[str, str]
     image_aliases: list[str]
     image_hashes: list[str]
-    short_term_url_aliases: dict[str, str]
-    short_term_image_aliases: dict[str, str]
+    all_image_aliases: list[str]
+    all_image_hashes: list[str]
+    image_hash_to_alias: dict[str, str]
     debug: bool
     long_term_memory: str
     short_term_context: str
@@ -394,24 +396,46 @@ class KisaragiAgent:
             turn_window=self._config.short_term_turn_window,
         )
         short_term_urls = self._extract_short_term_urls(short_term_messages)
-        short_term_url_aliases = {
-            f"[short-url-{idx}]": url for idx, url in enumerate(short_term_urls, start=1)
-        }
-        short_term_image_aliases = {
-            f"[short-image-{idx}]": image_hash
-            for idx, image_hash in enumerate(short_term_image_hashes, start=1)
-        }
-        short_term_hash_to_alias = {
-            image_hash: alias for alias, image_hash in short_term_image_aliases.items()
-        }
+        url_to_alias = {url: alias for alias, url in url_aliases.items()}
+        next_url_index = len(url_aliases) + 1
+        for url in short_term_urls:
+            if url in url_to_alias:
+                continue
+            alias = f"[url-{next_url_index}]"
+            next_url_index += 1
+            url_to_alias[url] = alias
+            url_aliases[alias] = url
+
+        image_hash_to_alias: dict[str, str] = {}
+        all_image_hashes: list[str] = []
+        for idx, image_hash in enumerate(image_hashes, start=1):
+            normalized_hash = str(image_hash).strip().lower()
+            if not normalized_hash or normalized_hash in image_hash_to_alias:
+                continue
+            alias = f"[image-{idx}]"
+            image_hash_to_alias[normalized_hash] = alias
+            all_image_hashes.append(normalized_hash)
+
+        all_image_aliases = list(image_aliases)
+        next_image_index = len(image_aliases) + 1
+        for image_hash in short_term_image_hashes:
+            normalized_hash = str(image_hash).strip().lower()
+            if not normalized_hash or normalized_hash in image_hash_to_alias:
+                continue
+            alias = f"[image-{next_image_index}]"
+            next_image_index += 1
+            image_hash_to_alias[normalized_hash] = alias
+            all_image_hashes.append(normalized_hash)
+            all_image_aliases.append(alias)
+
         short_term_context = self._format_short_term_context(
             short_term_messages,
             short_term_image_refs=short_term_image_refs,
-            short_term_hash_to_alias=short_term_hash_to_alias,
+            short_term_hash_to_alias=image_hash_to_alias,
+            short_term_url_to_alias=url_to_alias,
         )
-        image_alias_text = self._format_image_alias_text(image_aliases)
-        short_term_url_alias_text = ", ".join(short_term_url_aliases.keys()) or "(none)"
-        short_term_image_alias_text = ", ".join(short_term_image_aliases.keys()) or "(none)"
+        url_alias_text = ", ".join(url_aliases.keys()) or "(none)"
+        image_alias_text = self._format_image_alias_text(all_image_aliases)
 
         working_text = (
             "[STEP-0-LONG-TERM-MEMORY]\n"
@@ -421,10 +445,8 @@ class KisaragiAgent:
             "[STEP-0-SHORT-TERM-CONTEXT]\n"
             f"{short_term_context}\n\n"
             "[STEP-0-RESOURCE-ALIASES]\n"
-            f"urls: {', '.join(url_aliases.keys()) or '(none)'}\n"
-            f"images: {image_alias_text}\n"
-            f"short_term_urls: {short_term_url_alias_text}\n"
-            f"short_term_images: {short_term_image_alias_text}\n\n"
+            f"urls: {url_alias_text}\n"
+            f"images: {image_alias_text}\n\n"
             "[STEP-0-ORIGINAL-INPUT]\n"
             f"{normalized_message}"
         )
@@ -434,20 +456,20 @@ class KisaragiAgent:
             "[STEP-0-SHORT-TERM-CONTEXT]\n"
             f"{short_term_context}\n\n"
             "[STEP-0-RESOURCE-ALIASES]\n"
-            f"urls: {', '.join(url_aliases.keys()) or '(none)'}\n"
+            f"urls: {url_alias_text}\n"
             f"images: {image_alias_text}\n"
-            f"short_term_urls: {short_term_url_alias_text}\n"
-            f"short_term_images: {short_term_image_alias_text}"
         )
         self._log_step_debug(state, "STEP-0", attachment_text)
 
         return {
             "user_message_normalized": normalized_message,
             "url_aliases": url_aliases,
+            "url_to_alias": url_to_alias,
             "image_aliases": image_aliases,
             "image_hashes": image_hashes,
-            "short_term_url_aliases": short_term_url_aliases,
-            "short_term_image_aliases": short_term_image_aliases,
+            "all_image_aliases": all_image_aliases,
+            "all_image_hashes": all_image_hashes,
+            "image_hash_to_alias": image_hash_to_alias,
             "long_term_memory": long_term_memory,
             "short_term_context": short_term_context,
             "working_text": working_text,
@@ -460,8 +482,7 @@ class KisaragiAgent:
 
     def _step1_urls(self, state: AgentState) -> AgentState:
         url_aliases = state.get("url_aliases") or {}
-        short_term_url_aliases = state.get("short_term_url_aliases") or {}
-        if not url_aliases and not short_term_url_aliases:
+        if not url_aliases:
             appendix = "[STEP-1-URL-SUMMARIES]\n(no url detected)"
             self._log_step_debug(state, "STEP-1", appendix)
             return {
@@ -487,23 +508,6 @@ class KisaragiAgent:
                 f"[SUMMARY]\n{summary}"
             )
 
-        if short_term_url_aliases:
-            blocks.append("[STEP-1-SHORT-TERM-URL-SUMMARIES]")
-            for idx, (alias, url) in enumerate(short_term_url_aliases.items(), start=1):
-                summary, from_cache, crawled_chars = self._get_or_create_url_summary(
-                    alias=alias,
-                    url=url,
-                    summary_by_url=summary_by_url,
-                )
-                cache_status = "hit" if from_cache else "miss"
-                blocks.append(
-                    f"{idx}. {alias}\n"
-                    f"[URL] {url}\n"
-                    f"[CACHE] {cache_status}\n"
-                    f"[CRAWLED-CONTENT-CHARS] {crawled_chars}\n"
-                    f"[SUMMARY]\n{summary}"
-                )
-
         appendix = "\n\n".join(blocks)
         self._log_step_debug(state, "STEP-1", appendix)
         return {
@@ -513,9 +517,14 @@ class KisaragiAgent:
 
     def _step2_vision(self, state: AgentState) -> AgentState:
         images = state.get("images") or []
-        short_term_image_aliases = state.get("short_term_image_aliases") or {}
-        if not images and not short_term_image_aliases:
-            appendix = "[STEP-2-IMAGE-DESCRIPTIONS]\n(no image input)"
+        all_image_hashes = state.get("all_image_hashes") or []
+        image_hash_to_alias = state.get("image_hash_to_alias") or {}
+        if not images and not all_image_hashes:
+            appendix = (
+                "[STEP-2-IMAGE-DESCRIPTIONS]\n(no image input)\n\n"
+                "[STEP-2-INPUT-YAML]\n"
+                + str(state.get("user_message", ""))
+            )
             self._log_step_debug(state, "STEP-2", appendix)
             return {
                 "working_text": state["working_text"] + "\n\n" + appendix,
@@ -524,27 +533,46 @@ class KisaragiAgent:
 
         image_aliases = state.get("image_aliases") or []
         image_hashes = state.get("image_hashes") or []
-        blocks: list[str] = ["[STEP-2-IMAGE-DESCRIPTIONS]"]
         description_by_hash: dict[str, str] = {}
+        hashless_items: list[tuple[str, ImageInput]] = []
         for idx, image in enumerate(images, start=1):
             image_hash = image_hashes[idx - 1] if idx - 1 < len(image_hashes) else ""
+            alias = image_aliases[idx - 1] if idx - 1 < len(image_aliases) else f"[image-{idx}]"
+            normalized_hash = str(image_hash).strip().lower()
+            if not normalized_hash:
+                hashless_items.append((alias, image))
+                continue
             description = self._get_or_create_image_description(
                 image=image,
-                image_hash=image_hash,
+                image_hash=normalized_hash,
                 description_by_hash=description_by_hash,
             )
-            alias = image_aliases[idx - 1] if idx - 1 < len(image_aliases) else f"[image-{idx}]"
-            blocks.append(f"{idx}. {alias}\n{description}")
+            description_by_hash[normalized_hash] = description
 
-        if short_term_image_aliases:
-            blocks.append("[STEP-2-SHORT-TERM-IMAGE-DESCRIPTIONS]")
-            for idx, (alias, image_hash) in enumerate(short_term_image_aliases.items(), start=1):
-                description = description_by_hash.get(image_hash)
-                if description is None:
-                    description = self._memory_store.get_image_description(image_hash)
-                if description is None:
-                    description = "(description cache miss)"
-                blocks.append(f"{idx}. {alias}\n{description}")
+        blocks: list[str] = ["[STEP-2-IMAGE-DESCRIPTIONS]"]
+        item_index = 1
+        for image_hash in all_image_hashes:
+            normalized_hash = str(image_hash).strip().lower()
+            if not normalized_hash:
+                continue
+            alias = image_hash_to_alias.get(normalized_hash)
+            if not alias:
+                continue
+            description = description_by_hash.get(normalized_hash)
+            if description is None:
+                description = self._memory_store.get_image_description(normalized_hash)
+            if description is None:
+                description = "(description cache miss)"
+            blocks.append(f"{item_index}. {alias}\n{description}")
+            item_index += 1
+
+        for alias, image in hashless_items:
+            description = self._describe_image(image)
+            blocks.append(f"{item_index}. {alias}\n{description}")
+            item_index += 1
+
+        blocks.append("[STEP-2-INPUT-YAML]")
+        blocks.append(str(state.get("user_message", "")))
 
         appendix = "\n\n".join(blocks)
         self._log_step_debug(state, "STEP-2", appendix)
@@ -1010,6 +1038,7 @@ class KisaragiAgent:
         *,
         short_term_image_refs: dict[float, dict[int, str]] | None = None,
         short_term_hash_to_alias: dict[str, str] | None = None,
+        short_term_url_to_alias: dict[str, str] | None = None,
     ) -> str:
         if not messages:
             return "(empty)"
@@ -1030,8 +1059,41 @@ class KisaragiAgent:
                     refs_by_index=refs_by_index,
                     hash_to_alias=short_term_hash_to_alias,
                 )
+            if short_term_url_to_alias:
+                content = KisaragiAgent._replace_urls_with_known_aliases(
+                    content,
+                    url_to_alias=short_term_url_to_alias,
+                )
             lines.append(f"{idx}. [{item.role}] {content}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _replace_urls_with_known_aliases(text: str, *, url_to_alias: dict[str, str]) -> str:
+        if not text:
+            return text
+        if not url_to_alias:
+            return text
+
+        parts: list[str] = []
+        last_end = 0
+        for match in URL_PATTERN.finditer(text):
+            raw = match.group(1)
+            start, end = match.span(1)
+            cleaned = KisaragiAgent._normalize_url_from_match(raw)
+            if not cleaned:
+                continue
+            alias = url_to_alias.get(cleaned)
+            if alias is None:
+                continue
+            suffix = raw[len(cleaned) :]
+            parts.append(text[last_end:start])
+            parts.append(alias + suffix)
+            last_end = end
+
+        if not parts:
+            return text
+        parts.append(text[last_end:])
+        return "".join(parts)
 
     @staticmethod
     def _replace_legacy_image_hash_aliases(

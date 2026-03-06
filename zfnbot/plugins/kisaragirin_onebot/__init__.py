@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import csv
 import math
 import mimetypes
 import random
@@ -77,6 +78,32 @@ COMMAND_HELP_TEXT = (
     "/clears - 只清除短期记忆\n"
     "/clearl - 只清除长期记忆"
 )
+
+_QQ_FACE_ID_TO_NAME: dict[str, str] | None = None
+
+
+def _load_qq_face_map() -> dict[str, str]:
+    path = Path(__file__).with_name("qq_faces.csv")
+    mapping: dict[str, str] = {}
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                face_id = str(row.get("表情 ID") or "").strip()
+                meaning = str(row.get("表情含义") or "").strip()
+                if not face_id or not meaning:
+                    continue
+                mapping[face_id] = meaning
+    except Exception:
+        logger.opt(exception=True).warning("load qq face map failed: {}", path)
+    return mapping
+
+
+def _qq_face_name(face_id: str) -> str:
+    global _QQ_FACE_ID_TO_NAME
+    if _QQ_FACE_ID_TO_NAME is None:
+        _QQ_FACE_ID_TO_NAME = _load_qq_face_map()
+    return _QQ_FACE_ID_TO_NAME.get(face_id, "")
 
 
 def _get_group_state(group_id: int) -> GroupState:
@@ -385,6 +412,28 @@ async def _parse_segments(
 ) -> tuple[list[MessageSegmentData], bool, bool]:
     segments: list[MessageSegmentData] = []
     has_unknown_segment = False
+    member_name_cache: dict[int, str] = {}
+
+    async def _member_display_name(user_id: int) -> str:
+        cached = member_name_cache.get(user_id)
+        if cached is not None:
+            return cached
+        name = str(user_id)
+        try:
+            info = await bot.get_group_member_info(group_id=group_id, user_id=user_id)
+            if isinstance(info, dict):
+                nickname = str(info.get("nickname") or "").strip()
+                name = nickname or name
+        except Exception:
+            logger.opt(exception=True).debug(
+                "get_group_member_info failed group={} message_id={} user_id={}",
+                group_id,
+                message_id,
+                user_id,
+            )
+        member_name_cache[user_id] = name
+        return name
+
     for idx, segment in enumerate(message, start=1):
         segment_type = segment.type
         segment_data = dict(segment.data)
@@ -435,6 +484,34 @@ async def _parse_segments(
             continue
 
         if segment_type in {"at", "mention"}:
+            qq_value = segment_data.get("qq") or segment_data.get("user_id") or segment_data.get("id")
+            target = str(qq_value or "").strip()
+            if not target:
+                continue
+
+            if segments and segments[-1].type == "text" and segments[-1].text.strip() == "@":
+                segments.pop()
+
+            if target.lower() == "all":
+                segments.append(
+                    MessageSegmentData(
+                        type="at",
+                        text="@全体成员",
+                        at_name="全体成员",
+                    )
+                )
+                continue
+
+            user_id = int(target) if target.isdigit() else 0
+            name = await _member_display_name(user_id) if user_id else target
+            segments.append(
+                MessageSegmentData(
+                    type="at",
+                    text=f"@{name}",
+                    at_user_id=user_id or None,
+                    at_name=str(name),
+                )
+            )
             continue
 
         if segment_type == "text":
@@ -461,6 +538,24 @@ async def _parse_segments(
                 segments.append(image_segment)
             continue
 
+        if segment_type == "face":
+            raw_face = segment_data.get("raw")
+            face_text = ""
+            if isinstance(raw_face, dict):
+                face_text = str(raw_face.get("faceText") or "").strip()
+            if face_text.startswith("/"):
+                face_text = face_text[1:].strip()
+
+            if face_text:
+                name = face_text
+            else:
+                face_id = str(segment_data.get("id") or "").strip()
+                if not face_id:
+                    continue
+                name = _qq_face_name(face_id) or face_id
+            segments.append(MessageSegmentData(type="text", text=f"[face:{name}]"))
+            continue
+
         has_unknown_segment = True
         logger.debug(
             "unknown segment kept only in merged_text group={} message_id={} index={} depth={} type={}",
@@ -480,12 +575,60 @@ async def _parse_message(
     bot_id: str,
 ) -> tuple[list[MessageSegmentData], bool, bool]:
     mentioned_bot = bool(event.is_tome())
+    raw_message = str(getattr(event, "raw_message", "") or "")
+    message_for_parse = _coerce_to_message(getattr(event, "original_message", event.message))
+    plaintext = ""
+    extract_plaintext = ""
+    try:
+        get_plaintext = getattr(event, "get_plaintext", None)
+        if callable(get_plaintext):
+            plaintext = str(get_plaintext() or "")
+    except Exception:
+        plaintext = ""
+    try:
+        extract_plaintext = str(event.message.extract_plain_text() or "")
+    except Exception:
+        extract_plaintext = ""
+    try:
+        segment_types = [f"{idx}:{seg.type}" for idx, seg in enumerate(event.message, start=1)]
+    except Exception:
+        segment_types = []
+    try:
+        original_message_obj = getattr(event, "original_message", None)
+        original_segment_types = (
+            [f"{idx}:{seg.type}" for idx, seg in enumerate(original_message_obj, start=1)]
+            if isinstance(original_message_obj, Message)
+            else []
+        )
+    except Exception:
+        original_segment_types = []
     logger.debug(
         "message meta group={} message_id={} to_me={} raw_message={}",
         event.group_id,
         event.message_id,
         mentioned_bot,
-        getattr(event, "raw_message", ""),
+        raw_message,
+    )
+    logger.info(
+        "incoming segments group={} message_id={} segment_types={}",
+        event.group_id,
+        event.message_id,
+        segment_types,
+    )
+    if original_segment_types:
+        logger.info(
+            "incoming original_message segments group={} message_id={} original_segment_types={}",
+            event.group_id,
+            event.message_id,
+            original_segment_types,
+        )
+    logger.info(
+        "incoming text views group={} message_id={} raw_message={} get_plaintext={} extract_plain_text={}",
+        event.group_id,
+        event.message_id,
+        raw_message,
+        plaintext,
+        extract_plaintext,
     )
     if mentioned_bot:
         logger.info(
@@ -496,7 +639,12 @@ async def _parse_message(
 
     event_reply = getattr(event, "reply", None)
     prefixed_reply_segment: MessageSegmentData | None = None
-    if event_reply is not None:
+    has_reply_seg = False
+    try:
+        has_reply_seg = any(seg.type == "reply" for seg in message_for_parse)
+    except Exception:
+        has_reply_seg = False
+    if event_reply is not None and not has_reply_seg:
         logger.debug(
             "event.reply detected group={} message_id={} reply={}",
             event.group_id,
@@ -549,7 +697,7 @@ async def _parse_message(
 
     parsed_segments, parsed_mentioned_bot, parsed_has_unknown = await _parse_segments(
         bot,
-        message=event.message,
+        message=message_for_parse,
         bot_id=bot_id,
         group_id=event.group_id,
         message_id=event.message_id,
