@@ -1,11 +1,12 @@
 ﻿from __future__ import annotations
 
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from langgraph.graph import END, START, StateGraph
 
-from .routing import ExecutionPlan
+from .routing import ExecutionPlan, GraphNodeSpec, GraphSpec
 
 StepHandler = Callable[[Any], Any]
 StepImplementationRegistry = dict[str, dict[str, StepHandler]]
@@ -54,40 +55,60 @@ def resolve_phase_variant(execution_plan: ExecutionPlan, phase: str) -> str:
     return str(execution_plan.phase_variants.get(phase, "default"))
 
 
-def graph_node_name(phase: str, variant: str) -> str:
-    return f"phase_{phase}__{variant}"
-
-
-def resolve_steps_for_phases(
+def resolve_graph_steps(
     execution_plan: ExecutionPlan,
-    phases: tuple[str, ...],
+    graph_spec: GraphSpec,
     implementations: StepImplementationRegistry,
     metadata: dict[str, dict[str, StepMetadata]] | None = None,
-) -> list[ResolvedStep]:
-    resolved_steps: list[ResolvedStep] = []
+) -> dict[str, ResolvedStep]:
+    resolved_steps: dict[str, ResolvedStep] = {}
     step_metadata = metadata or DEFAULT_STEP_METADATA
-    for phase in phases:
-        variant = resolve_phase_variant(execution_plan, phase)
-        phase_metadata = step_metadata.get(phase, {})
-        phase_implementations = implementations.get(phase, {})
+    for node in graph_spec.nodes:
+        variant = resolve_phase_variant(execution_plan, node.phase)
+        phase_metadata = step_metadata.get(node.phase, {})
+        phase_implementations = implementations.get(node.phase, {})
         step_meta = phase_metadata.get(variant)
         handler = phase_implementations.get(variant)
         if step_meta is None or handler is None:
             raise KeyError(
-                f"Unsupported phase variant '{variant}' for phase '{phase}'"
+                f"Unsupported phase variant '{variant}' for phase '{node.phase}'"
             )
-        resolved_steps.append(
-            ResolvedStep(
-                phase=phase,
-                variant=variant,
-                step_name=step_meta.step_name,
-                node_name=graph_node_name(phase, variant)
-                or step_meta.default_node_name,
-                handler=handler,
-                emits_reply=step_meta.emits_reply,
-            )
+        resolved_steps[node.node_id] = ResolvedStep(
+            phase=node.phase,
+            variant=variant,
+            step_name=step_meta.step_name,
+            node_name=node.node_id or step_meta.default_node_name,
+            handler=handler,
+            emits_reply=step_meta.emits_reply,
         )
     return resolved_steps
+
+
+def topologically_order_steps(
+    graph_spec: GraphSpec,
+    resolved_steps: dict[str, ResolvedStep],
+) -> list[ResolvedStep]:
+    indegree: dict[str, int] = {node.node_id: 0 for node in graph_spec.nodes}
+    adjacency: dict[str, list[str]] = defaultdict(list)
+    for source, target in graph_spec.edges:
+        adjacency[source].append(target)
+        indegree[target] = indegree.get(target, 0) + 1
+
+    queue: deque[str] = deque(
+        node.node_id for node in graph_spec.nodes if indegree.get(node.node_id, 0) == 0
+    )
+    ordered: list[ResolvedStep] = []
+    while queue:
+        node_id = queue.popleft()
+        ordered.append(resolved_steps[node_id])
+        for target in adjacency.get(node_id, []):
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                queue.append(target)
+
+    if len(ordered) != len(graph_spec.nodes):
+        raise ValueError("Graph spec contains a cycle or disconnected node resolution failure")
+    return ordered
 
 
 def resolve_all_steps(
@@ -95,26 +116,13 @@ def resolve_all_steps(
     implementations: StepImplementationRegistry,
     metadata: dict[str, dict[str, StepMetadata]] | None = None,
 ) -> list[ResolvedStep]:
-    return [
-        *resolve_steps_for_phases(
-            execution_plan,
-            execution_plan.shared_prelude_phases,
-            implementations,
-            metadata,
-        ),
-        *resolve_steps_for_phases(
-            execution_plan,
-            execution_plan.route_middle_phases,
-            implementations,
-            metadata,
-        ),
-        *resolve_steps_for_phases(
-            execution_plan,
-            execution_plan.shared_finalize_phases,
-            implementations,
-            metadata,
-        ),
-    ]
+    resolved_steps = resolve_graph_steps(
+        execution_plan,
+        execution_plan.graph_spec,
+        implementations,
+        metadata,
+    )
+    return topologically_order_steps(execution_plan.graph_spec, resolved_steps)
 
 
 def split_resolved_steps_for_reply_first(
@@ -166,19 +174,22 @@ def build_graph_for_execution_plan(
     metadata: dict[str, dict[str, StepMetadata]] | None = None,
 ):
     graph = StateGraph(state_type)
-    resolved_steps = resolve_all_steps(
+    resolved_steps = resolve_graph_steps(
         execution_plan,
+        execution_plan.graph_spec,
         implementations,
         metadata,
     )
-    for resolved_step in resolved_steps:
+    for resolved_step in resolved_steps.values():
         graph.add_node(
             resolved_step.node_name,
             wrap_step(resolved_step.step_name, resolved_step.handler),
         )
 
-    graph.add_edge(START, resolved_steps[0].node_name)
-    for current_step, next_step in zip(resolved_steps, resolved_steps[1:]):
-        graph.add_edge(current_step.node_name, next_step.node_name)
-    graph.add_edge(resolved_steps[-1].node_name, END)
+    for entry_node_id in execution_plan.graph_spec.entry_node_ids:
+        graph.add_edge(START, entry_node_id)
+    for source, target in execution_plan.graph_spec.edges:
+        graph.add_edge(source, target)
+    for exit_node_id in execution_plan.graph_spec.exit_node_ids:
+        graph.add_edge(exit_node_id, END)
     return graph.compile()

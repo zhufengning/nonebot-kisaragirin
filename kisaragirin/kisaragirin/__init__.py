@@ -9,7 +9,7 @@ from .config import (
     PromptConfig,
     StepModelIds,
 )
-from .routing import ExecutionPlan, RouteDecision
+from .routing import ExecutionPlan, GraphNodeSpec, GraphSpec, RouteDecision
 
 __all__ = [
     "AgentConfig",
@@ -17,6 +17,8 @@ __all__ = [
     "ConversationResponse",
     "CrawlerConfig",
     "ExecutionPlan",
+    "GraphNodeSpec",
+    "GraphSpec",
     "ImageInput",
     "KisaragiAgent",
     "ModelConfig",

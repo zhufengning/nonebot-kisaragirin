@@ -21,7 +21,7 @@
 - `zfnbot/plugins/kisaragirin_onebot/config_schema.py`：插件配置结构定义。
 - `zfnbot/plugins/kisaragirin_onebot/config.py`：插件实际运行配置。
 - `kisaragirin/kisaragirin/agent.py`：Agent 主流程（step0~step5）与图装配入口。
-- `kisaragirin/kisaragirin/routing.py`：RouteDecision / ExecutionPlan 等路由与执行计划骨架。
+- `kisaragirin/kisaragirin/routing.py`：RouteDecision、ExecutionPlan、GraphSpec 等路由与图规格骨架。
 - `kisaragirin/kisaragirin/orchestration.py`：步骤元数据、步骤解析与图装配公共逻辑。
 - `kisaragirin/kisaragirin/steps_core.py`：已抽离的核心 step 实现（当前包含 `step0`、`step1`）。
 - `kisaragirin/kisaragirin/steps_response.py`：已抽离的回复与记忆 step 实现（当前包含 `step4`、`step5`）。
@@ -88,6 +88,7 @@
 
 - 安装依赖：`uv sync`
 - 启动：`python bot.py`
+
 
 
 
