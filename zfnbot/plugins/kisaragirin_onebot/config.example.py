@@ -1,36 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from dataclasses import dataclass, field
+from kisaragirin import CrawlerConfig, ModelConfig, StepModelIds
 
-from kisaragirin import ModelConfig, StepModelIds
-
-
-@dataclass(slots=True, frozen=True)
-class GroupConfig:
-    persona: str
-    fixed_memory: str = ""
-
-
-@dataclass(slots=True, frozen=True)
-class ReplyTimingConfig:
-    mention_quiet_seconds: int = 8
-    idle_start_minutes: int = 5
-    idle_expect_minutes: int = 15
-
-
-@dataclass(slots=True, frozen=True, kw_only=True)
-class PluginConfig:
-    models: tuple[ModelConfig, ...]
-    step_models: StepModelIds
-    groups: dict[int, GroupConfig]
-    short_term_turn_window: int = 12
-    ops: tuple[int, ...] = ()
-    exa_api_key: str = ""
-    brave_search_api_key: str = ""
-    serpapi_api_key: str = ""
-    timing: ReplyTimingConfig = field(default_factory=ReplyTimingConfig)
-    memory_db_path: str = ".kisaragirin_memory.sqlite3"
-    debug: bool = False
+from .config_schema import GroupConfig, PluginConfig, ReplyTimingConfig
 
 
 PLUGIN_CONFIG = PluginConfig(
@@ -39,6 +11,11 @@ PLUGIN_CONFIG = PluginConfig(
     exa_api_key="",
     brave_search_api_key="",
     serpapi_api_key="",
+    crawler=CrawlerConfig(
+        headless=False,
+        verbose=True,
+        user_data_dir=None,
+    ),
     models=(
         ModelConfig(
             id="vision",
@@ -53,7 +30,7 @@ PLUGIN_CONFIG = PluginConfig(
             base_url="https://api.siliconflow.cn/v1",
             api_key="sk-",
             model="Pro/moonshotai/Kimi-K2.5",
-            extra_body={"enable_thinking": False}
+            extra_body={"enable_thinking": False},
         ),
     ),
     step_models=StepModelIds(

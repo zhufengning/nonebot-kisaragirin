@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
@@ -25,6 +25,13 @@ class StepModelIds:
     tool: str
     reply: str
     memory: str
+
+
+@dataclass(slots=True, frozen=True)
+class CrawlerConfig:
+    headless: bool = False
+    verbose: bool = True
+    user_data_dir: str | None = None
 
 
 @dataclass(slots=True)
@@ -56,6 +63,7 @@ class AgentConfig:
     exa_api_key: str = ""
     brave_search_api_key: str = ""
     serpapi_api_key: str = ""
+    crawler: CrawlerConfig = field(default_factory=CrawlerConfig)
     memory_db_path: str = ".kisaragirin_memory.sqlite3"
     short_term_turn_window: int = 12
     max_tool_rounds: int = 4
@@ -72,7 +80,12 @@ class AgentConfig:
         **kwargs: object,
     ) -> "AgentConfig":
         model_map = {m.id: m for m in models}
-        return cls(models=model_map, step_models=step_models, prompts=prompts or PromptConfig(), **kwargs)
+        return cls(
+            models=model_map,
+            step_models=step_models,
+            prompts=prompts or PromptConfig(),
+            **kwargs,
+        )
 
 
 @dataclass(slots=True)

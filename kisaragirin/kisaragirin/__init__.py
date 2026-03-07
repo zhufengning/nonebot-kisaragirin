@@ -1,8 +1,9 @@
-from .agent import KisaragiAgent
+﻿from .agent import KisaragiAgent
 from .config import (
     AgentConfig,
     ConversationRequest,
     ConversationResponse,
+    CrawlerConfig,
     ImageInput,
     ModelConfig,
     PromptConfig,
@@ -13,6 +14,7 @@ __all__ = [
     "AgentConfig",
     "ConversationRequest",
     "ConversationResponse",
+    "CrawlerConfig",
     "ImageInput",
     "KisaragiAgent",
     "ModelConfig",

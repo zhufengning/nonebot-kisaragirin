@@ -1,22 +1,27 @@
-# kisaragirin_onebot
+﻿# kisaragirin_onebot
 
 这个插件把 OneBot V11 群消息转成结构化输入，交给 `kisaragirin` 处理，并基于队列策略决定回复时机。
 
 ## 配置位置
 
-- 插件配置：`zfnbot/plugins/kisaragirin_onebot/config.py`
-- 主要配置项：
-  - `models` / `step_models`：模型与步骤映射
-  - `exa_api_key`：Exa API Key（启用 `exa_search`，并优先用于 `web_search`）
-  - `brave_search_api_key`：Brave Search API Key（当 `exa_api_key` 为空时，回退用于 `web_search`）
-  - `serpapi_api_key`：SerpApi Key（为空时不启用 `scholar_search` 工具）
-  - `groups`：群白名单 + 每群 persona
-  - `short_term_turn_window`：短期记忆保留轮数（按 user+assistant 成对窗口）
-  - `ops`：可执行管理指令的 QQ 号白名单（非 ops 执行会返回 `Access Denied`）
-  - `timing.mention_quiet_seconds`：收到消息后静默 N 秒触发 @ 回复检查
-  - `timing.idle_start_minutes`：群聊静默 M 分钟后进入“抽卡回复”
-  - `timing.idle_expect_minutes`：抽卡概率增长的期望回复时长
-  - `debug`：是否把 `kisaragirin` 的 step 调试日志写到日志系统
+- 配置结构定义：`zfnbot/plugins/kisaragirin_onebot/config_schema.py`
+- 运行配置：`zfnbot/plugins/kisaragirin_onebot/config.py`
+- 配置示例：`zfnbot/plugins/kisaragirin_onebot/config.example.py`
+
+## 主要配置项
+
+- `models` / `step_models`：模型与步骤映射
+- `exa_api_key`：Exa API Key（启用 `exa_search`，并优先用于 `web_search`）
+- `brave_search_api_key`：Brave Search API Key（当 `exa_api_key` 为空时，回退用于 `web_search`）
+- `serpapi_api_key`：SerpApi Key（为空时不启用 `scholar_search` 工具）
+- `groups`：群白名单 + 每群 persona
+- `short_term_turn_window`：短期记忆保留轮数（按 user+assistant 成对窗口）
+- `ops`：可执行管理指令的 QQ 号白名单（非 ops 执行会返回 `Access Denied`）
+- `timing.mention_quiet_seconds`：收到消息后静默 N 秒触发 @ 回复检查
+- `timing.idle_start_minutes`：群聊静默 M 分钟后进入“抽卡回复”
+- `timing.idle_expect_minutes`：抽卡概率增长的期望回复时长
+- `crawler.headless` / `crawler.verbose` / `crawler.user_data_dir`：crawler 运行配置
+- `debug`：是否把 `kisaragirin` 的 step 调试日志写到日志系统
 
 ## 消息处理流程
 
@@ -27,7 +32,8 @@
    - 若队列中有 @bot 的消息，则触发一次回复；
    - 回复会引用最后一条 @ 消息。
 5. 群内静默达到 `idle_start_minutes` 后，每分钟按递增概率抽卡决定是否回复。
-6. 成功回复后清空该群队列。
+6. 开始回复时会先取当前队列快照并出队；成功回复后不会清空后续新进队消息，失败时会把快照消息回灌队列。
+7. step4 先发送回复，step5 在后台写回记忆；step5 完成前该群保持 replying 状态。
 
 ## 输入给 Agent 的格式
 

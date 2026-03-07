@@ -1,6 +1,6 @@
 # bot_renew 项目信息
 
-请在做出任何修改后检查是否需要更新README.md和AGENTS.md
+请在做出任何修改后检查是否需要更新README.md(包括根目录和kisaragirin的)和AGENTS.md
 
 ## 项目概览
 

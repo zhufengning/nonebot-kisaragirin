@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import base64
@@ -119,15 +119,25 @@ def _get_group_agent(group_id: int) -> KisaragiAgent:
     if agent is not None:
         return agent
     group_config = PLUGIN_CONFIG.groups[group_id]
+    crawler_config = getattr(PLUGIN_CONFIG, "crawler", None)
+    agent_kwargs: dict[str, Any] = {
+        "exa_api_key": PLUGIN_CONFIG.exa_api_key,
+        "brave_search_api_key": PLUGIN_CONFIG.brave_search_api_key,
+        "serpapi_api_key": PLUGIN_CONFIG.serpapi_api_key,
+        "memory_db_path": PLUGIN_CONFIG.memory_db_path,
+        "short_term_turn_window": PLUGIN_CONFIG.short_term_turn_window,
+    }
+    if crawler_config is not None:
+        agent_kwargs["crawler"] = crawler_config
+
     agent_config = AgentConfig.from_model_list(
         models=list(PLUGIN_CONFIG.models),
         step_models=PLUGIN_CONFIG.step_models,
-        prompts=PromptConfig(persona=group_config.persona, fixed_memory=group_config.fixed_memory),
-        exa_api_key=PLUGIN_CONFIG.exa_api_key,
-        brave_search_api_key=PLUGIN_CONFIG.brave_search_api_key,
-        serpapi_api_key=PLUGIN_CONFIG.serpapi_api_key,
-        memory_db_path=PLUGIN_CONFIG.memory_db_path,
-        short_term_turn_window=PLUGIN_CONFIG.short_term_turn_window,
+        prompts=PromptConfig(
+            persona=group_config.persona,
+            fixed_memory=group_config.fixed_memory,
+        ),
+        **agent_kwargs,
     )
     agent = KisaragiAgent(agent_config)
     _GROUP_AGENTS[group_id] = agent
@@ -1095,3 +1105,6 @@ async def _shutdown_plugin() -> None:
     _GROUP_AGENTS.clear()
     for agent in agents:
         await asyncio.to_thread(agent.close)
+
+
+

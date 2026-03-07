@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import base64
@@ -868,13 +868,16 @@ class KisaragiAgent:
         crawler_cls = self._get_crawler_cls()
 
         async def _crawl() -> str:
-            async with crawler_cls(
-                config=BrowserConfig(
-                    headless=False,  # Headless mode can be detected easier
-                    verbose=True,
-                    user_data_dir="/home/zfn/.config/chromium-profile",
-                )
-            ) as crawler:
+            crawler_config = self._config.crawler
+            browser_kwargs: dict[str, Any] = {
+                "headless": crawler_config.headless,
+                "verbose": crawler_config.verbose,
+            }
+            user_data_dir = str(crawler_config.user_data_dir or "").strip()
+            if user_data_dir:
+                browser_kwargs["user_data_dir"] = str(Path(user_data_dir).expanduser())
+
+            async with crawler_cls(config=BrowserConfig(**browser_kwargs)) as crawler:
                 result = await crawler.arun(url=url)
                 text = self._extract_crawl_text(result)
                 if len(text) > max_chars:
@@ -1289,3 +1292,4 @@ class KisaragiAgent:
         merged = dict(state.get("step_attachments", {}))
         merged[step] = value
         return merged
+
