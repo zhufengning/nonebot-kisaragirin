@@ -125,8 +125,9 @@ async def _try_reply(
 
     sent = False
     finalize_future: asyncio.Future[None] | None = None
+    delivery_future = None
     try:
-        response, finalize_future = await _get_group_agent(group_id).arun_reply_first(request)
+        response, finalize_future, delivery_future = await _get_group_agent(group_id).arun_reply_first(request)
         reply_raw = response.reply if isinstance(response.reply, str) else str(response.reply or "")
         logger.debug(
             "reply generated trigger={} group={} chars={}",
@@ -168,6 +169,8 @@ async def _try_reply(
         logger.exception("kisaragirin run failed in group {}", group_id)
         return False
     finally:
+        if delivery_future is not None and not delivery_future.done():
+            delivery_future.set_result(sent)
         if finalize_future is not None:
             try:
                 await asyncio.shield(finalize_future)

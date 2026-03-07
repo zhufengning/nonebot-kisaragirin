@@ -33,7 +33,7 @@
    - 回复会引用最后一条 @ 消息。
 5. 群内静默达到 `idle_start_minutes` 后，每分钟按递增概率抽卡决定是否回复。
 6. 开始回复时会先取当前队列快照并出队；成功回复后不会清空后续新进队消息，失败时会把快照消息回灌队列。
-7. step4 先发送回复，step5 在后台写回记忆；step5 完成前该群保持 replying 状态。
+7. step4 先发送回复；只有发送成功后，step5 才会实际写回记忆。step5 完成前该群保持 replying 状态。
 
 ## 输入给 Agent 的格式
 
@@ -64,3 +64,4 @@
 - `idle draw ... probability=... draw=... hit=...`
 - `reply trigger=...`
 - `reply sent trigger=...`
+

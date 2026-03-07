@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+from concurrent.futures import Future as ThreadFuture
 import hashlib
 import json
 import logging
@@ -17,17 +18,32 @@ from urllib.parse import unquote_to_bytes, urlsplit
 
 from crawl4ai import BrowserConfig
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
-from langgraph.graph import END, START, StateGraph
 
 from .config import AgentConfig, ConversationRequest, ConversationResponse, ImageInput
 from .memory import ShortTermMessage, SQLiteMemoryStore
+from .orchestration import StepImplementationRegistry
 from .prompts import (
     MEMORY_JSON_INSTRUCTION,
     STEP_SYSTEM_INSTRUCTIONS,
     URL_SUMMARY_PROMPT_TEMPLATE,
     VISION_DESCRIPTION_PROMPT,
+)
+from .steps_core import run_step0_prepare, run_step1_urls
+from .steps_enrichment import run_step2_vision, run_step3_tools
+from .steps_response import run_step4_reply, run_step5_memory
+from .orchestration import (
+    build_graph_for_execution_plan,
+    execute_resolved_steps,
+    resolve_all_steps,
+    resolve_reply_first_step_groups,
+)
+from .routing import (
+    ExecutionPlan,
+    RouteDecision,
+    build_default_route_decision,
+    build_execution_plan,
 )
 from .tools import build_default_tools
 
@@ -66,6 +82,9 @@ class AgentState(TypedDict, total=False):
     user_message: str
     user_message_normalized: str
     images: list[ImageInput]
+    assistant_reply_sent: bool
+    route_decision: RouteDecision
+    execution_plan: ExecutionPlan
     url_aliases: dict[str, str]
     url_to_alias: dict[str, str]
     image_aliases: list[str]
@@ -171,6 +190,9 @@ class KisaragiAgent:
             )
         )
         self._tool_map = {tool.name: tool for tool in self._tools}
+        self._default_execution_plan = self._resolve_execution_plan(
+            build_default_route_decision()
+        )
         self._graph = self._build_graph()
 
     def run(self, request: ConversationRequest) -> ConversationResponse:
@@ -194,15 +216,66 @@ class KisaragiAgent:
         # Keep event loop responsive in async callers by running sync graph in a worker thread.
         return await asyncio.to_thread(self.run, request)
 
-    @staticmethod
-    def _build_initial_state(request: ConversationRequest) -> AgentState:
+    def _build_initial_state(self, request: ConversationRequest) -> AgentState:
+        route_decision = self._resolve_route_decision(request)
+        execution_plan = self._resolve_execution_plan(route_decision)
         return {
             "conversation_id": request.conversation_id,
             "user_message": request.message,
             "images": list(request.images),
+            "assistant_reply_sent": True,
+            "route_decision": route_decision,
+            "execution_plan": execution_plan,
             "debug": request.debug,
             "step_attachments": {},
         }
+
+    def _resolve_route_decision(self, request: ConversationRequest) -> RouteDecision:
+        return build_default_route_decision()
+
+    def _resolve_execution_plan(self, route_decision: RouteDecision) -> ExecutionPlan:
+        return build_execution_plan(route_decision)
+
+    def _execution_steps(
+        self, execution_plan: ExecutionPlan
+    ) -> list[tuple[str, str, Any]]:
+        return [
+            (step.step_name, step.node_name, step.handler)
+            for step in resolve_all_steps(
+                execution_plan,
+                self._step_implementations(),
+            )
+        ]
+
+    def _step_implementations(self) -> StepImplementationRegistry:
+        return {
+            "prepare": {
+                "default": lambda state: run_step0_prepare(self, state),
+            },
+            "url": {
+                "default": lambda state: run_step1_urls(self, state),
+            },
+            "vision": {
+                "default": lambda state: run_step2_vision(self, state),
+            },
+            "tools": {
+                "default": lambda state: run_step3_tools(self, state),
+            },
+            "reply": {
+                "default": lambda state: run_step4_reply(self, state),
+            },
+            "memory": {
+                "default": lambda state: run_step5_memory(self, state),
+            },
+        }
+
+    def _build_graph_for_execution_plan(self, execution_plan: ExecutionPlan):
+        return build_graph_for_execution_plan(
+            state_type=AgentState,
+            execution_plan=execution_plan,
+            implementations=self._step_implementations(),
+            wrap_step=self._with_step_timing,
+        )
 
     @staticmethod
     def _resolve_future(
@@ -228,19 +301,20 @@ class KisaragiAgent:
 
     async def arun_reply_first(
         self, request: ConversationRequest
-    ) -> tuple[ConversationResponse, asyncio.Future[None]]:
+    ) -> tuple[ConversationResponse, asyncio.Future[None], ThreadFuture[bool]]:
         loop = asyncio.get_running_loop()
         reply_future: asyncio.Future[ConversationResponse] = loop.create_future()
         done_future: asyncio.Future[None] = loop.create_future()
+        delivery_future: ThreadFuture[bool] = ThreadFuture()
         worker = Thread(
             target=self._run_reply_first_worker,
-            args=(request, loop, reply_future, done_future),
+            args=(request, loop, reply_future, done_future, delivery_future),
             name=f"kisaragirin-reply-first-{request.conversation_id}",
             daemon=True,
         )
         worker.start()
         response = await reply_future
-        return response, done_future
+        return response, done_future, delivery_future
 
     def _run_reply_first_worker(
         self,
@@ -248,27 +322,36 @@ class KisaragiAgent:
         loop: asyncio.AbstractEventLoop,
         reply_future: asyncio.Future[ConversationResponse],
         done_future: asyncio.Future[None],
+        delivery_future: ThreadFuture[bool],
     ) -> None:
         conversation_lock = self._get_conversation_lock(request.conversation_id)
         try:
             with conversation_lock:
                 state = self._build_initial_state(request)
                 started_at = time.perf_counter()
-                for step_name, step_fn in (
-                    ("STEP-0", self._step0_prepare),
-                    ("STEP-1", self._step1_urls),
-                    ("STEP-2", self._step2_vision),
-                    ("STEP-3", self._step3_tools),
-                    ("STEP-4", self._step4_reply),
-                ):
-                    updates = self._with_step_timing(step_name, step_fn)(state)
-                    state = {**state, **updates}
+                execution_plan = state["execution_plan"]
+                reply_path_steps, finalize_steps = resolve_reply_first_step_groups(
+                    execution_plan,
+                    self._step_implementations(),
+                )
+
+                state = execute_resolved_steps(
+                    state=state,
+                    resolved_steps=reply_path_steps,
+                    wrap_step=self._with_step_timing,
+                )
 
                 reply = ConversationResponse(reply=str(state.get("reply", "")))
                 self._resolve_future(loop, reply_future, result=reply)
 
-                updates = self._with_step_timing("STEP-5", self._step5_memory)(state)
-                state = {**state, **updates}
+                reply_sent = bool(delivery_future.result())
+                state = {**state, "assistant_reply_sent": reply_sent}
+
+                state = execute_resolved_steps(
+                    state=state,
+                    resolved_steps=finalize_steps,
+                    wrap_step=self._with_step_timing,
+                )
                 total_ms = (time.perf_counter() - started_at) * 1000
                 self._log_performance_report(
                     conversation_id=request.conversation_id,
@@ -338,32 +421,7 @@ class KisaragiAgent:
         return models
 
     def _build_graph(self):
-        graph = StateGraph(AgentState)
-        graph.add_node(
-            "step0_prepare", self._with_step_timing("STEP-0", self._step0_prepare)
-        )
-        graph.add_node("step1_urls", self._with_step_timing("STEP-1", self._step1_urls))
-        graph.add_node(
-            "step2_vision", self._with_step_timing("STEP-2", self._step2_vision)
-        )
-        graph.add_node(
-            "step3_tools", self._with_step_timing("STEP-3", self._step3_tools)
-        )
-        graph.add_node(
-            "step4_reply", self._with_step_timing("STEP-4", self._step4_reply)
-        )
-        graph.add_node(
-            "step5_memory", self._with_step_timing("STEP-5", self._step5_memory)
-        )
-
-        graph.add_edge(START, "step0_prepare")
-        graph.add_edge("step0_prepare", "step1_urls")
-        graph.add_edge("step1_urls", "step2_vision")
-        graph.add_edge("step2_vision", "step3_tools")
-        graph.add_edge("step3_tools", "step4_reply")
-        graph.add_edge("step4_reply", "step5_memory")
-        graph.add_edge("step5_memory", END)
-        return graph.compile()
+        return self._build_graph_for_execution_plan(self._default_execution_plan)
 
     def _with_step_timing(
         self,
@@ -393,375 +451,6 @@ class KisaragiAgent:
             return merged_result
 
         return _wrapped
-
-    def _step0_prepare(self, state: AgentState) -> AgentState:
-        conversation_id = state["conversation_id"]
-        normalized_message, url_aliases = self._replace_urls_with_aliases(
-            state["user_message"]
-        )
-        image_aliases = [
-            f"[image-{idx}]" for idx, _ in enumerate(state.get("images") or [], start=1)
-        ]
-        image_hashes = [
-            self._compute_image_sha256(image) for image in (state.get("images") or [])
-        ]
-        long_term_memory_raw = self._memory_store.get_long_term(conversation_id)
-        long_term_memory = self._replace_legacy_image_hash_aliases(long_term_memory_raw)
-        short_term_messages = self._memory_store.get_short_term(
-            conversation_id=conversation_id,
-            turn_window=self._config.short_term_turn_window,
-        )
-        short_term_image_hashes = self._memory_store.get_short_term_image_hashes(
-            conversation_id=conversation_id,
-            turn_window=self._config.short_term_turn_window,
-        )
-        short_term_image_refs = self._memory_store.get_short_term_image_refs(
-            conversation_id=conversation_id,
-            turn_window=self._config.short_term_turn_window,
-        )
-        short_term_urls = self._extract_short_term_urls(short_term_messages)
-        url_to_alias = {url: alias for alias, url in url_aliases.items()}
-        next_url_index = len(url_aliases) + 1
-        for url in short_term_urls:
-            if url in url_to_alias:
-                continue
-            alias = f"[url-{next_url_index}]"
-            next_url_index += 1
-            url_to_alias[url] = alias
-            url_aliases[alias] = url
-
-        image_hash_to_alias: dict[str, str] = {}
-        all_image_hashes: list[str] = []
-        for idx, image_hash in enumerate(image_hashes, start=1):
-            normalized_hash = str(image_hash).strip().lower()
-            if not normalized_hash or normalized_hash in image_hash_to_alias:
-                continue
-            alias = f"[image-{idx}]"
-            image_hash_to_alias[normalized_hash] = alias
-            all_image_hashes.append(normalized_hash)
-
-        all_image_aliases = list(image_aliases)
-        next_image_index = len(image_aliases) + 1
-        for image_hash in short_term_image_hashes:
-            normalized_hash = str(image_hash).strip().lower()
-            if not normalized_hash or normalized_hash in image_hash_to_alias:
-                continue
-            alias = f"[image-{next_image_index}]"
-            next_image_index += 1
-            image_hash_to_alias[normalized_hash] = alias
-            all_image_hashes.append(normalized_hash)
-            all_image_aliases.append(alias)
-
-        short_term_context = self._format_short_term_context(
-            short_term_messages,
-            short_term_image_refs=short_term_image_refs,
-            short_term_hash_to_alias=image_hash_to_alias,
-            short_term_url_to_alias=url_to_alias,
-        )
-        url_alias_text = ", ".join(url_aliases.keys()) or "(none)"
-        image_alias_text = self._format_image_alias_text(all_image_aliases)
-
-        working_text = (
-            "[STEP-0-LONG-TERM-MEMORY]\n"
-            f"{long_term_memory or '(empty)'}\n\n"
-            "[STEP-0-FIXED-MEMORY]\n"
-            f"{self._config.prompts.fixed_memory or '(empty)'}\n\n"
-            "[STEP-0-SHORT-TERM-CONTEXT]\n"
-            f"{short_term_context}\n\n"
-            "[STEP-0-RESOURCE-ALIASES]\n"
-            f"urls: {url_alias_text}\n"
-            f"images: {image_alias_text}\n\n"
-            "[STEP-0-ORIGINAL-INPUT]\n"
-            f"{normalized_message}"
-        )
-        attachment_text = (
-            "[STEP-0-LONG-TERM-MEMORY]\n"
-            f"{long_term_memory or '(empty)'}\n\n"
-            "[STEP-0-SHORT-TERM-CONTEXT]\n"
-            f"{short_term_context}\n\n"
-            "[STEP-0-RESOURCE-ALIASES]\n"
-            f"urls: {url_alias_text}\n"
-            f"images: {image_alias_text}\n"
-        )
-        self._log_step_debug(state, "STEP-0", attachment_text)
-
-        return {
-            "user_message_normalized": normalized_message,
-            "url_aliases": url_aliases,
-            "url_to_alias": url_to_alias,
-            "image_aliases": image_aliases,
-            "image_hashes": image_hashes,
-            "all_image_aliases": all_image_aliases,
-            "all_image_hashes": all_image_hashes,
-            "image_hash_to_alias": image_hash_to_alias,
-            "long_term_memory": long_term_memory,
-            "short_term_context": short_term_context,
-            "working_text": working_text,
-            "step_attachments": self._set_attachment(
-                state,
-                "STEP-0",
-                attachment_text,
-            ),
-        }
-
-    def _step1_urls(self, state: AgentState) -> AgentState:
-        url_aliases = state.get("url_aliases") or {}
-        if not url_aliases:
-            appendix = "[STEP-1-URL-SUMMARIES]\n(no url detected)"
-            self._log_step_debug(state, "STEP-1", appendix)
-            return {
-                "working_text": state["working_text"] + "\n\n" + appendix,
-                "step_attachments": self._set_attachment(state, "STEP-1", appendix),
-            }
-
-        blocks: list[str] = ["[STEP-1-URL-SUMMARIES]"]
-        summary_by_url: dict[str, str] = {}
-
-        for idx, (alias, url) in enumerate(url_aliases.items(), start=1):
-            summary, from_cache, crawled_chars = self._get_or_create_url_summary(
-                alias=alias,
-                url=url,
-                summary_by_url=summary_by_url,
-            )
-            cache_status = "hit" if from_cache else "miss"
-            blocks.append(
-                f"{idx}. {alias}\n"
-                f"[URL] {url}\n"
-                f"[CACHE] {cache_status}\n"
-                f"[CRAWLED-CONTENT-CHARS] {crawled_chars}\n"
-                f"[SUMMARY]\n{summary}"
-            )
-
-        appendix = "\n\n".join(blocks)
-        self._log_step_debug(state, "STEP-1", appendix)
-        return {
-            "working_text": state["working_text"] + "\n\n" + appendix,
-            "step_attachments": self._set_attachment(state, "STEP-1", appendix),
-        }
-
-    def _step2_vision(self, state: AgentState) -> AgentState:
-        images = state.get("images") or []
-        all_image_hashes = state.get("all_image_hashes") or []
-        image_hash_to_alias = state.get("image_hash_to_alias") or {}
-        if not images and not all_image_hashes:
-            appendix = (
-                "[STEP-2-IMAGE-DESCRIPTIONS]\n(no image input)\n\n"
-                "[STEP-2-INPUT-YAML]\n" + str(state.get("user_message", ""))
-            )
-            self._log_step_debug(state, "STEP-2", appendix)
-            return {
-                "working_text": state["working_text"] + "\n\n" + appendix,
-                "step_attachments": self._set_attachment(state, "STEP-2", appendix),
-            }
-
-        image_aliases = state.get("image_aliases") or []
-        image_hashes = state.get("image_hashes") or []
-        description_by_hash: dict[str, str] = {}
-        hashless_items: list[tuple[str, ImageInput]] = []
-        for idx, image in enumerate(images, start=1):
-            image_hash = image_hashes[idx - 1] if idx - 1 < len(image_hashes) else ""
-            alias = (
-                image_aliases[idx - 1]
-                if idx - 1 < len(image_aliases)
-                else f"[image-{idx}]"
-            )
-            normalized_hash = str(image_hash).strip().lower()
-            if not normalized_hash:
-                hashless_items.append((alias, image))
-                continue
-            description = self._get_or_create_image_description(
-                image=image,
-                image_hash=normalized_hash,
-                description_by_hash=description_by_hash,
-            )
-            description_by_hash[normalized_hash] = description
-
-        blocks: list[str] = ["[STEP-2-IMAGE-DESCRIPTIONS]"]
-        item_index = 1
-        for image_hash in all_image_hashes:
-            normalized_hash = str(image_hash).strip().lower()
-            if not normalized_hash:
-                continue
-            alias = image_hash_to_alias.get(normalized_hash)
-            if not alias:
-                continue
-            description = description_by_hash.get(normalized_hash)
-            if description is None:
-                description = self._memory_store.get_image_description(normalized_hash)
-            if description is None:
-                description = "(description cache miss)"
-            blocks.append(f"{item_index}. {alias}\n{description}")
-            item_index += 1
-
-        for alias, image in hashless_items:
-            description = self._describe_image(image)
-            blocks.append(f"{item_index}. {alias}\n{description}")
-            item_index += 1
-
-        blocks.append("[STEP-2-INPUT-YAML]")
-        blocks.append(str(state.get("user_message", "")))
-
-        appendix = "\n\n".join(blocks)
-        self._log_step_debug(state, "STEP-2", appendix)
-        return {
-            "working_text": state["working_text"] + "\n\n" + appendix,
-            "step_attachments": self._set_attachment(state, "STEP-2", appendix),
-        }
-
-    def _step3_tools(self, state: AgentState) -> AgentState:
-        tool_model = self._model(self._config.step_models.tool).bind_tools(self._tools)
-        messages: list[Any] = [
-            SystemMessage(content=self._system_prompt("tool")),
-            HumanMessage(content=state["working_text"]),
-        ]
-
-        logs: list[str] = ["[STEP-3-TOOL-EXTRA-INFO]"]
-        used_tool = False
-
-        for round_idx in range(1, self._config.max_tool_rounds + 1):
-            raw_ai_message = tool_model.invoke(messages)
-            ai_message = raw_ai_message
-            if isinstance(raw_ai_message, AIMessage):
-                # Avoid replaying Responses API item references when store=False.
-                ai_message = AIMessage(
-                    content=self._message_to_text(raw_ai_message.content),
-                    tool_calls=raw_ai_message.tool_calls,
-                )
-            messages.append(ai_message)
-
-            tool_calls = (
-                ai_message.tool_calls if isinstance(ai_message, AIMessage) else []
-            )
-            if not tool_calls:
-                final_note = self._message_to_text(ai_message.content)
-                if final_note.strip():
-                    logs.append(f"[ROUND-{round_idx}-MODEL-NOTE]\n{final_note.strip()}")
-                break
-
-            used_tool = True
-            for call_idx, tool_call in enumerate(tool_calls, start=1):
-                tool_name = tool_call.get("name", "")
-                tool_args = tool_call.get("args", {})
-                tool_id = tool_call.get("id", f"round-{round_idx}-call-{call_idx}")
-
-                tool_output = self._invoke_tool(tool_name, tool_args)
-                if len(tool_output) > self._config.max_tool_output_chars:
-                    tool_output = (
-                        tool_output[: self._config.max_tool_output_chars]
-                        + "\n...<truncated>"
-                    )
-
-                logs.append(
-                    f"[ROUND-{round_idx}-TOOL-{call_idx}] {tool_name}\n"
-                    f"args={json.dumps(tool_args, ensure_ascii=False)}\n"
-                    f"output:\n{tool_output}"
-                )
-
-                messages.append(
-                    ToolMessage(
-                        content=tool_output, tool_call_id=tool_id, name=tool_name
-                    )
-                )
-
-        if not used_tool:
-            logs.append("No tool was called.")
-
-        appendix = "\n\n".join(logs)
-        self._log_step_debug(state, "STEP-3", appendix)
-        return {
-            "working_text": state["working_text"] + "\n\n" + appendix,
-            "step_attachments": self._set_attachment(state, "STEP-3", appendix),
-        }
-
-    def _step4_reply(self, state: AgentState) -> AgentState:
-        model = self._model(self._config.step_models.reply)
-        reply_msg = model.invoke(
-            [
-                SystemMessage(content=self._system_prompt("reply")),
-                HumanMessage(content=state["working_text"]),
-            ]
-        )
-        reply_text = self._message_to_text(reply_msg.content)
-        attachment = "[STEP-4-REPLY]\n" + reply_text
-        self._log_step_debug(state, "STEP-4", attachment)
-        return {
-            "reply": reply_text,
-            "step_attachments": self._set_attachment(state, "STEP-4", attachment),
-        }
-
-    def _step5_memory(self, state: AgentState) -> AgentState:
-        memory_model = self._model(self._config.step_models.memory)
-
-        msg = memory_model.invoke(
-            [
-                SystemMessage(content=self._system_prompt("memory")),
-                HumanMessage(
-                    content=(
-                        f"{MEMORY_JSON_INSTRUCTION}\n\n"
-                        "[PREVIOUS-LONG-TERM-MEMORY]\n"
-                        f"{state.get('long_term_memory') or '(empty)'}\n\n"
-                        "[THIS-TURN-ENRICHED-INPUT]\n"
-                        f"{state['working_text']}\n\n"
-                        "[THIS-TURN-REPLY]\n"
-                        f"{state.get('reply', '')}"
-                    )
-                ),
-            ]
-        )
-
-        parsed = self._parse_memory_json(self._message_to_text(msg.content))
-        new_long_term = self._normalize_memory_text(
-            parsed.get("long_term_memory"),
-            fallback=state.get("long_term_memory", ""),
-        )
-        memory_compacted = False
-        if len(new_long_term) > 2000:
-            compact_msg = memory_model.invoke(
-                [
-                    SystemMessage(content=self._system_prompt("memory")),
-                    HumanMessage(
-                        content=(
-                            f"{MEMORY_JSON_INSTRUCTION}\n\n"
-                            "你的记忆太长了，需要精简到2000字符以内。\n\n"
-                            "[CURRENT-LONG-TERM-MEMORY]\n"
-                            f"{new_long_term}"
-                        )
-                    ),
-                ]
-            )
-            compact_parsed = self._parse_memory_json(
-                self._message_to_text(compact_msg.content)
-            )
-            new_long_term = self._normalize_memory_text(
-                compact_parsed.get("long_term_memory"),
-                fallback=new_long_term,
-            )
-            if len(new_long_term) > 2000:
-                new_long_term = new_long_term[:2000]
-            memory_compacted = True
-        self._memory_store.persist_turn(
-            conversation_id=state["conversation_id"],
-            long_term_memory=new_long_term,
-            user_message=str(state.get("user_message", "")),
-            assistant_reply=state.get("reply", ""),
-            user_image_hashes=state.get("image_hashes") or [],
-        )
-
-        attachment = (
-            "[STEP-5-MEMORY-UPDATE]\n"
-            "long_term_memory_updated=true\n"
-            f"long_term_memory_compacted={'true' if memory_compacted else 'false'}\n"
-            "short_term_memory_appended=user+assistant"
-        )
-        self._log_step_debug(
-            state,
-            "STEP-5",
-            attachment + f"\nupdated_long_term_memory:\n{new_long_term}",
-        )
-        return {
-            "long_term_memory": new_long_term,
-            "step_attachments": self._set_attachment(state, "STEP-5", attachment),
-        }
 
     def _summarize_url(self, alias: str, page_text: str) -> str:
         model = self._model(self._config.step_models.summarize)

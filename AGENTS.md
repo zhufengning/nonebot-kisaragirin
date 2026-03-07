@@ -20,7 +20,12 @@
 - `zfnbot/plugins/kisaragirin_onebot/payload.py`：将消息序列化为 YAML，并构造 `ConversationRequest`。
 - `zfnbot/plugins/kisaragirin_onebot/config_schema.py`：插件配置结构定义。
 - `zfnbot/plugins/kisaragirin_onebot/config.py`：插件实际运行配置。
-- `kisaragirin/kisaragirin/agent.py`：Agent 主流程（step0~step5）。
+- `kisaragirin/kisaragirin/agent.py`：Agent 主流程（step0~step5）与图装配入口。
+- `kisaragirin/kisaragirin/routing.py`：RouteDecision / ExecutionPlan 等路由与执行计划骨架。
+- `kisaragirin/kisaragirin/orchestration.py`：步骤元数据、步骤解析与图装配公共逻辑。
+- `kisaragirin/kisaragirin/steps_core.py`：已抽离的核心 step 实现（当前包含 `step0`、`step1`）。
+- `kisaragirin/kisaragirin/steps_response.py`：已抽离的回复与记忆 step 实现（当前包含 `step4`、`step5`）。
+- `kisaragirin/kisaragirin/steps_enrichment.py`：已抽离的增强型 step 实现（当前包含 `step2`、`step3`）。
 - `kisaragirin/kisaragirin/tools.py`：内置工具（`read_url`、可选 `exa_search`、可选 `web_search`〔优先 Exa，回退 Brave〕、可选 `scholar_search`）。
 - `kisaragirin/kisaragirin/memory.py`：SQLite 记忆与缓存存储。
 - `kisaragirin/kisaragirin/prompts.py`：各步骤提示词文本。
@@ -37,7 +42,7 @@
   - 静默 `idle_start_minutes` 后进入每分钟一次概率抽卡，概率递增，期望在 `idle_expect_minutes` 左右触发。
 - 回复执行逻辑：
   - 开始回复时先将当前队列快照并出队（后续新消息不影响本轮）。
-  - step4 产出回复文本后会先发送到群里；step5 记忆写回在后台继续执行。
+  - step4 产出回复文本后会先发送到群里；只有发送成功后，step5 才会实际写回记忆。
   - 在 step5 完成前，当前群仍保持 replying 状态，下一次回复触发会继续等待/跳过。
   - 若回复失败，会把快照消息回灌队列，避免丢消息。
   - 若回复成功，不再“全量清空队列”；新进队的消息继续等待下一轮触发。
@@ -83,6 +88,17 @@
 
 - 安装依赖：`uv sync`
 - 启动：`python bot.py`
+
+
+
+
+
+
+
+
+
+
+
 
 
 
