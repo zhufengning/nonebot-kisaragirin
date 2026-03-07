@@ -228,3 +228,4 @@ zfnbot/plugins/kisaragirin_onebot/config.py
 up.sh
 down.sh
 *.bak
+test.py

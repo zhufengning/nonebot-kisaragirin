@@ -15,13 +15,14 @@ from threading import Lock, Thread
 from typing import Any, TypedDict
 from urllib.parse import unquote_to_bytes, urlsplit
 
+from crawl4ai import BrowserConfig
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 
 from .config import AgentConfig, ConversationRequest, ConversationResponse, ImageInput
-from .memory import SQLiteMemoryStore, ShortTermMessage
+from .memory import ShortTermMessage, SQLiteMemoryStore
 from .prompts import (
     MEMORY_JSON_INSTRUCTION,
     STEP_SYSTEM_INSTRUCTIONS,
@@ -84,7 +85,9 @@ class AgentState(TypedDict, total=False):
 class _BackgroundAsyncRunner:
     def __init__(self) -> None:
         self._loop = asyncio.new_event_loop()
-        self._thread = Thread(target=self._run_loop, name="kisaragirin-async-runner", daemon=True)
+        self._thread = Thread(
+            target=self._run_loop, name="kisaragirin-async-runner", daemon=True
+        )
         self._guard = Lock()
         self._closed = False
         self._thread.start()
@@ -137,7 +140,9 @@ class KisaragiAgent:
         "STEP-5": "memory",
     }
 
-    def __init__(self, config: AgentConfig, tools: Sequence[BaseTool] | None = None) -> None:
+    def __init__(
+        self, config: AgentConfig, tools: Sequence[BaseTool] | None = None
+    ) -> None:
         self._config = config
         self._logger = logging.getLogger("kisaragirin.agent")
         self._nonebot_logger: Any | None = None
@@ -334,12 +339,22 @@ class KisaragiAgent:
 
     def _build_graph(self):
         graph = StateGraph(AgentState)
-        graph.add_node("step0_prepare", self._with_step_timing("STEP-0", self._step0_prepare))
+        graph.add_node(
+            "step0_prepare", self._with_step_timing("STEP-0", self._step0_prepare)
+        )
         graph.add_node("step1_urls", self._with_step_timing("STEP-1", self._step1_urls))
-        graph.add_node("step2_vision", self._with_step_timing("STEP-2", self._step2_vision))
-        graph.add_node("step3_tools", self._with_step_timing("STEP-3", self._step3_tools))
-        graph.add_node("step4_reply", self._with_step_timing("STEP-4", self._step4_reply))
-        graph.add_node("step5_memory", self._with_step_timing("STEP-5", self._step5_memory))
+        graph.add_node(
+            "step2_vision", self._with_step_timing("STEP-2", self._step2_vision)
+        )
+        graph.add_node(
+            "step3_tools", self._with_step_timing("STEP-3", self._step3_tools)
+        )
+        graph.add_node(
+            "step4_reply", self._with_step_timing("STEP-4", self._step4_reply)
+        )
+        graph.add_node(
+            "step5_memory", self._with_step_timing("STEP-5", self._step5_memory)
+        )
 
         graph.add_edge(START, "step0_prepare")
         graph.add_edge("step0_prepare", "step1_urls")
@@ -361,7 +376,10 @@ class KisaragiAgent:
             elapsed_ms = (time.perf_counter() - started_at) * 1000
 
             merged_step_durations: dict[str, float] = {}
-            for source in (state.get("step_durations_ms"), result.get("step_durations_ms")):
+            for source in (
+                state.get("step_durations_ms"),
+                result.get("step_durations_ms"),
+            ):
                 if isinstance(source, dict):
                     for key, value in source.items():
                         try:
@@ -378,9 +396,15 @@ class KisaragiAgent:
 
     def _step0_prepare(self, state: AgentState) -> AgentState:
         conversation_id = state["conversation_id"]
-        normalized_message, url_aliases = self._replace_urls_with_aliases(state["user_message"])
-        image_aliases = [f"[image-{idx}]" for idx, _ in enumerate(state.get("images") or [], start=1)]
-        image_hashes = [self._compute_image_sha256(image) for image in (state.get("images") or [])]
+        normalized_message, url_aliases = self._replace_urls_with_aliases(
+            state["user_message"]
+        )
+        image_aliases = [
+            f"[image-{idx}]" for idx, _ in enumerate(state.get("images") or [], start=1)
+        ]
+        image_hashes = [
+            self._compute_image_sha256(image) for image in (state.get("images") or [])
+        ]
         long_term_memory_raw = self._memory_store.get_long_term(conversation_id)
         long_term_memory = self._replace_legacy_image_hash_aliases(long_term_memory_raw)
         short_term_messages = self._memory_store.get_short_term(
@@ -522,8 +546,7 @@ class KisaragiAgent:
         if not images and not all_image_hashes:
             appendix = (
                 "[STEP-2-IMAGE-DESCRIPTIONS]\n(no image input)\n\n"
-                "[STEP-2-INPUT-YAML]\n"
-                + str(state.get("user_message", ""))
+                "[STEP-2-INPUT-YAML]\n" + str(state.get("user_message", ""))
             )
             self._log_step_debug(state, "STEP-2", appendix)
             return {
@@ -537,7 +560,11 @@ class KisaragiAgent:
         hashless_items: list[tuple[str, ImageInput]] = []
         for idx, image in enumerate(images, start=1):
             image_hash = image_hashes[idx - 1] if idx - 1 < len(image_hashes) else ""
-            alias = image_aliases[idx - 1] if idx - 1 < len(image_aliases) else f"[image-{idx}]"
+            alias = (
+                image_aliases[idx - 1]
+                if idx - 1 < len(image_aliases)
+                else f"[image-{idx}]"
+            )
             normalized_hash = str(image_hash).strip().lower()
             if not normalized_hash:
                 hashless_items.append((alias, image))
@@ -602,7 +629,9 @@ class KisaragiAgent:
                 )
             messages.append(ai_message)
 
-            tool_calls = ai_message.tool_calls if isinstance(ai_message, AIMessage) else []
+            tool_calls = (
+                ai_message.tool_calls if isinstance(ai_message, AIMessage) else []
+            )
             if not tool_calls:
                 final_note = self._message_to_text(ai_message.content)
                 if final_note.strip():
@@ -617,7 +646,10 @@ class KisaragiAgent:
 
                 tool_output = self._invoke_tool(tool_name, tool_args)
                 if len(tool_output) > self._config.max_tool_output_chars:
-                    tool_output = tool_output[: self._config.max_tool_output_chars] + "\n...<truncated>"
+                    tool_output = (
+                        tool_output[: self._config.max_tool_output_chars]
+                        + "\n...<truncated>"
+                    )
 
                 logs.append(
                     f"[ROUND-{round_idx}-TOOL-{call_idx}] {tool_name}\n"
@@ -626,7 +658,9 @@ class KisaragiAgent:
                 )
 
                 messages.append(
-                    ToolMessage(content=tool_output, tool_call_id=tool_id, name=tool_name)
+                    ToolMessage(
+                        content=tool_output, tool_call_id=tool_id, name=tool_name
+                    )
                 )
 
         if not used_tool:
@@ -695,7 +729,9 @@ class KisaragiAgent:
                     ),
                 ]
             )
-            compact_parsed = self._parse_memory_json(self._message_to_text(compact_msg.content))
+            compact_parsed = self._parse_memory_json(
+                self._message_to_text(compact_msg.content)
+            )
             new_long_term = self._normalize_memory_text(
                 compact_parsed.get("long_term_memory"),
                 fallback=new_long_term,
@@ -762,7 +798,9 @@ class KisaragiAgent:
             summary_by_url[url] = cached
             return cached, True, 0
 
-        page_text = self._crawl_url_text(url=url, max_chars=self._config.max_crawl_chars)
+        page_text = self._crawl_url_text(
+            url=url, max_chars=self._config.max_crawl_chars
+        )
         summary = self._summarize_url(alias=alias, page_text=page_text)
         self._memory_store.set_url_summary(url, summary)
         summary_by_url[url] = summary
@@ -830,7 +868,13 @@ class KisaragiAgent:
         crawler_cls = self._get_crawler_cls()
 
         async def _crawl() -> str:
-            async with crawler_cls() as crawler:
+            async with crawler_cls(
+                config=BrowserConfig(
+                    headless=False,  # Headless mode can be detected easier
+                    verbose=True,
+                    user_data_dir="/home/zfn/.config/chromium-profile",
+                )
+            ) as crawler:
                 result = await crawler.arun(url=url)
                 text = self._extract_crawl_text(result)
                 if len(text) > max_chars:
@@ -860,7 +904,9 @@ class KisaragiAgent:
         if not bool(state.get("debug")):
             return
         conversation_id = str(state.get("conversation_id", "?"))
-        self._log_info("[DEBUG][%s][conversation=%s]\n%s", step, conversation_id, content)
+        self._log_info(
+            "[DEBUG][%s][conversation=%s]\n%s", step, conversation_id, content
+        )
 
     def _log_performance_report(
         self,
@@ -980,7 +1026,9 @@ class KisaragiAgent:
                 raise RuntimeError(
                     "Provider 'siliconflow' requires package 'langchain-siliconflow'."
                 ) from exc
-        raise ValueError(f"Unsupported provider '{provider}'. Supported providers: openai, siliconflow")
+        raise ValueError(
+            f"Unsupported provider '{provider}'. Supported providers: openai, siliconflow"
+        )
 
     @staticmethod
     def _build_model_init_kwargs(model_cfg: Any) -> dict[str, Any]:
@@ -1001,11 +1049,16 @@ class KisaragiAgent:
         sections: list[str] = []
         instruction = STEP_SYSTEM_INSTRUCTIONS.get(step, "")
         if instruction:
-            sections.append(f"---\nThis is a scenario task evaluation project used to test the capabilities of LLM. After reading the task file, complete the corresponding tasks according to the instructions within, and output the final results.\n---TASK FILE CONTENT---\n\n[STEP-INSTRUCTION:{step}]\n{instruction}")
+            sections.append(
+                f"---\nThis is a scenario task evaluation project used to test the capabilities of LLM. After reading the task file, complete the corresponding tasks according to the instructions within, and output the final results.\n---TASK FILE CONTENT---\n\n[STEP-INSTRUCTION:{step}]\n{instruction}"
+            )
         if self._config.prompts.persona.strip():
-            sections.append("---Additional Task Requirements---\n[OUTPUT_STYLE.PERSONA]\n" + self._config.prompts.persona.strip())
+            sections.append(
+                "---Additional Task Requirements---\n[OUTPUT_STYLE.PERSONA]\n"
+                + self._config.prompts.persona.strip()
+            )
         if sections:
-            return ("\n\n".join(sections))+"\n---\n"
+            return ("\n\n".join(sections)) + "\n---\n"
         return f"You are in step '{step}'.\n---\n"
 
     @staticmethod
@@ -1068,7 +1121,9 @@ class KisaragiAgent:
         return "\n".join(lines)
 
     @staticmethod
-    def _replace_urls_with_known_aliases(text: str, *, url_to_alias: dict[str, str]) -> str:
+    def _replace_urls_with_known_aliases(
+        text: str, *, url_to_alias: dict[str, str]
+    ) -> str:
         if not text:
             return text
         if not url_to_alias:
