@@ -106,45 +106,10 @@ def run_step0_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         "long_term_memory": long_term_memory,
         "short_term_context": short_term_context,
         "working_text": working_text,
+        "working_text_base": working_text,
         "step_attachments": agent._set_attachment(
             state,
             "STEP-0",
             attachment_text,
         ),
-    }
-
-
-def run_step1_urls(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
-    url_aliases = state.get("url_aliases") or {}
-    if not url_aliases:
-        appendix = "[STEP-1-URL-SUMMARIES]\n(no url detected)"
-        agent._log_step_debug(state, "STEP-1", appendix)
-        return {
-            "working_text": state["working_text"] + "\n\n" + appendix,
-            "step_attachments": agent._set_attachment(state, "STEP-1", appendix),
-        }
-
-    blocks: list[str] = ["[STEP-1-URL-SUMMARIES]"]
-    summary_by_url: dict[str, str] = {}
-
-    for idx, (alias, url) in enumerate(url_aliases.items(), start=1):
-        summary, from_cache, crawled_chars = agent._get_or_create_url_summary(
-            alias=alias,
-            url=url,
-            summary_by_url=summary_by_url,
-        )
-        cache_status = "hit" if from_cache else "miss"
-        blocks.append(
-            f"{idx}. {alias}\n"
-            f"[URL] {url}\n"
-            f"[CACHE] {cache_status}\n"
-            f"[CRAWLED-CONTENT-CHARS] {crawled_chars}\n"
-            f"[SUMMARY]\n{summary}"
-        )
-
-    appendix = "\n\n".join(blocks)
-    agent._log_step_debug(state, "STEP-1", appendix)
-    return {
-        "working_text": state["working_text"] + "\n\n" + appendix,
-        "step_attachments": agent._set_attachment(state, "STEP-1", appendix),
     }

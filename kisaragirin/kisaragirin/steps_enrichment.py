@@ -8,6 +8,42 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from .config import ImageInput
 
 
+def run_step1_urls(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+    url_aliases = state.get("url_aliases") or {}
+    if not url_aliases:
+        appendix = "[STEP-1-URL-SUMMARIES]\n(no url detected)"
+        agent._log_step_debug(state, "STEP-1", appendix)
+        return {
+            "url_appendix": appendix,
+            "step_attachments": agent._set_attachment(state, "STEP-1", appendix),
+        }
+
+    blocks: list[str] = ["[STEP-1-URL-SUMMARIES]"]
+    summary_by_url: dict[str, str] = {}
+
+    for idx, (alias, url) in enumerate(url_aliases.items(), start=1):
+        summary, from_cache, crawled_chars = agent._get_or_create_url_summary(
+            alias=alias,
+            url=url,
+            summary_by_url=summary_by_url,
+        )
+        cache_status = "hit" if from_cache else "miss"
+        blocks.append(
+            f"{idx}. {alias}\n"
+            f"[URL] {url}\n"
+            f"[CACHE] {cache_status}\n"
+            f"[CRAWLED-CONTENT-CHARS] {crawled_chars}\n"
+            f"[SUMMARY]\n{summary}"
+        )
+
+    appendix = "\n\n".join(blocks)
+    agent._log_step_debug(state, "STEP-1", appendix)
+    return {
+        "url_appendix": appendix,
+        "step_attachments": agent._set_attachment(state, "STEP-1", appendix),
+    }
+
+
 def run_step2_vision(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     images = state.get("images") or []
     all_image_hashes = state.get("all_image_hashes") or []
@@ -19,7 +55,7 @@ def run_step2_vision(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         )
         agent._log_step_debug(state, "STEP-2", appendix)
         return {
-            "working_text": state["working_text"] + "\n\n" + appendix,
+            "vision_appendix": appendix,
             "step_attachments": agent._set_attachment(state, "STEP-2", appendix),
         }
 
@@ -73,8 +109,26 @@ def run_step2_vision(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     appendix = "\n\n".join(blocks)
     agent._log_step_debug(state, "STEP-2", appendix)
     return {
-        "working_text": state["working_text"] + "\n\n" + appendix,
+        "vision_appendix": appendix,
         "step_attachments": agent._set_attachment(state, "STEP-2", appendix),
+    }
+
+
+def run_step_enrich_merge(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+    base = str(state.get("working_text_base", state.get("working_text", "")))
+    url_appendix = str(state.get("url_appendix", "") or "").strip()
+    vision_appendix = str(state.get("vision_appendix", "") or "").strip()
+    parts = [base]
+    if url_appendix:
+        parts.append(url_appendix)
+    if vision_appendix:
+        parts.append(vision_appendix)
+    working_text = "\n\n".join(part for part in parts if part)
+    attachment = "[STEP-2M-ENRICH-MERGE]\nmerged=url+vision"
+    agent._log_step_debug(state, "STEP-2M", attachment)
+    return {
+        "working_text": working_text,
+        "step_attachments": agent._set_attachment(state, "STEP-2M", attachment),
     }
 
 

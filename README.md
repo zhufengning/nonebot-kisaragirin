@@ -2,6 +2,15 @@
 
 基于 NoneBot2 + OneBot V11 的群聊机器人项目，核心对话流程由本地包 `kisaragirin` 提供。
 
+## 目录导航
+
+- `bot.py`：启动入口
+- `zfnbot/plugins/kisaragirin_onebot/README.md`：OneBot 插件与消息调度说明
+- `kisaragirin/README.md`：Agent 包使用说明
+- `kisaragirin/GRAPH_DEVELOPMENT.md`：新增节点、条件边、并行图、构图开发指南
+- `TODO.md`：当前重构路线与待办事项
+- `AGENTS.md`：项目结构、协作规则与开发摘要
+
 ## 配置
 
 - 环境变量示例：复制 `.env.example` 为 `.env.prod` 后按需修改。
@@ -19,3 +28,4 @@
 - NoneBot 文档：<https://nonebot.dev/>
 - 插件说明：`zfnbot/plugins/kisaragirin_onebot/README.md`
 - Agent 包说明：`kisaragirin/README.md`
+- 图与节点开发指南：`kisaragirin/GRAPH_DEVELOPMENT.md`

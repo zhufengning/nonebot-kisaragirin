@@ -1,6 +1,14 @@
 ﻿# bot_renew 项目信息
 
-请在做出任何修改后检查是否需要更新README.md(包括根目录和kisaragirin的)和AGENTS.md
+请在做出任何修改后检查是否需要更新README, AGENTS.md以及其他文档。
+
+## 目录索引
+
+- `README.md`：项目入口说明、启动方式与文档导航。
+- `TODO.md`：当前重构路线与阶段状态。
+- `zfnbot/plugins/kisaragirin_onebot/README.md`：OneBot 插件行为、配置与调度说明。
+- `kisaragirin/README.md`：Agent 包说明。
+- `kisaragirin/GRAPH_DEVELOPMENT.md`：新增节点、建图、条件边、并行与 gate 设计指南。
 
 ## 项目概览
 
@@ -21,14 +29,16 @@
 - `zfnbot/plugins/kisaragirin_onebot/config_schema.py`：插件配置结构定义。
 - `zfnbot/plugins/kisaragirin_onebot/config.py`：插件实际运行配置。
 - `kisaragirin/kisaragirin/agent.py`：Agent 主流程（step0~step5）与图装配入口。
-- `kisaragirin/kisaragirin/routing.py`：RouteDecision、ExecutionPlan、GraphSpec 等路由与图规格骨架。
+- `kisaragirin/kisaragirin/routing.py`：RouteDecision、ExecutionPlan、GraphSpec、ConditionalEdgeSpec 等路由与图规格骨架。
 - `kisaragirin/kisaragirin/orchestration.py`：步骤元数据、步骤解析与图装配公共逻辑。
 - `kisaragirin/kisaragirin/steps_core.py`：已抽离的核心 step 实现（当前包含 `step0`、`step1`）。
 - `kisaragirin/kisaragirin/steps_response.py`：已抽离的回复与记忆 step 实现（当前包含 `step4`、`step5`）。
-- `kisaragirin/kisaragirin/steps_enrichment.py`：已抽离的增强型 step 实现（当前包含 `step2`、`step3`）。
+- `kisaragirin/kisaragirin/steps_enrichment.py`：已抽离的增强型 step 实现（当前包含 `step1`、`step2`、`step2M`、`step3`）。
+- `kisaragirin/kisaragirin/steps_routing.py`：路由 step 实现（当前包含 `route`）。
 - `kisaragirin/kisaragirin/tools.py`：内置工具（`read_url`、可选 `exa_search`、可选 `web_search`〔优先 Exa，回退 Brave〕、可选 `scholar_search`）。
 - `kisaragirin/kisaragirin/memory.py`：SQLite 记忆与缓存存储。
 - `kisaragirin/kisaragirin/prompts.py`：各步骤提示词文本。
+- `kisaragirin/GRAPH_DEVELOPMENT.md`：新增节点与构图开发指南。
 
 ## 当前消息处理机制（onebot 插件）
 
@@ -42,7 +52,9 @@
   - 静默 `idle_start_minutes` 后进入每分钟一次概率抽卡，概率递增，期望在 `idle_expect_minutes` 左右触发。
 - 回复执行逻辑：
   - 开始回复时先将当前队列快照并出队（后续新消息不影响本轮）。
-  - step4 产出回复文本后会先发送到群里；只有发送成功后，step5 才会实际写回记忆。
+  - 共享前段中，URL 总结与图片描述会并行执行，再汇总进入路由。
+- 路由阶段使用 `step_models.route` 指定的轻量模型在 `default` 与 `lite_chat` 路径间做判断；lite 路径跳过工具调用，但回复仍使用 `step_models.reply`。
+- step4 产出回复文本后会先发送到群里；只有发送成功后，step5 才会实际写回记忆。
   - 在 step5 完成前，当前群仍保持 replying 状态，下一次回复触发会继续等待/跳过。
   - 若回复失败，会把快照消息回灌队列，避免丢消息。
   - 若回复成功，不再“全量清空队列”；新进队的消息继续等待下一轮触发。
@@ -88,18 +100,3 @@
 
 - 安装依赖：`uv sync`
 - 启动：`python bot.py`
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

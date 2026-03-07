@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from importlib import import_module
 from pathlib import Path
 from threading import Lock, Thread
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 from urllib.parse import unquote_to_bytes, urlsplit
 
 from crawl4ai import BrowserConfig
@@ -25,19 +25,28 @@ from .config import AgentConfig, ConversationRequest, ConversationResponse, Imag
 from .memory import ShortTermMessage, SQLiteMemoryStore
 from .orchestration import StepImplementationRegistry
 from .prompts import (
-    MEMORY_JSON_INSTRUCTION,
     STEP_SYSTEM_INSTRUCTIONS,
     URL_SUMMARY_PROMPT_TEMPLATE,
     VISION_DESCRIPTION_PROMPT,
 )
-from .steps_core import run_step0_prepare, run_step1_urls
-from .steps_enrichment import run_step2_vision, run_step3_tools
-from .steps_response import run_step4_reply, run_step5_memory
+from .steps_core import run_step0_prepare
+from .steps_enrichment import (
+    run_step1_urls,
+    run_step2_vision,
+    run_step3_tools,
+    run_step_enrich_merge,
+)
+from .steps_response import (
+    run_step4_reply,
+    run_step4_reply_lite,
+    run_step5_memory,
+    run_step_memory_gate,
+)
+from .steps_routing import run_step_route
 from .orchestration import (
     build_graph_for_execution_plan,
-    execute_resolved_steps,
+    execute_graph_until_reply_and_finalize,
     resolve_all_steps,
-    resolve_reply_first_step_groups,
 )
 from .routing import (
     ExecutionPlan,
@@ -77,12 +86,35 @@ _CONVERSATION_LOCKS: dict[str, Lock] = {}
 _CONVERSATION_LOCKS_GUARD = Lock()
 
 
+def _merge_str_dicts(
+    left: dict[str, str] | None,
+    right: dict[str, str] | None,
+) -> dict[str, str]:
+    merged = dict(left or {})
+    merged.update(right or {})
+    return merged
+
+
+def _merge_float_dicts(
+    left: dict[str, float] | None,
+    right: dict[str, float] | None,
+) -> dict[str, float]:
+    merged = dict(left or {})
+    merged.update(right or {})
+    return merged
+
+
 class AgentState(TypedDict, total=False):
     conversation_id: str
     user_message: str
     user_message_normalized: str
     images: list[ImageInput]
     assistant_reply_sent: bool
+    working_text_base: str
+    url_appendix: str
+    vision_appendix: str
+    route_choice: str
+    memory_gate_result: str
     route_decision: RouteDecision
     execution_plan: ExecutionPlan
     url_aliases: dict[str, str]
@@ -97,8 +129,8 @@ class AgentState(TypedDict, total=False):
     short_term_context: str
     working_text: str
     reply: str
-    step_attachments: dict[str, str]
-    step_durations_ms: dict[str, float]
+    step_attachments: Annotated[dict[str, str], _merge_str_dicts]
+    step_durations_ms: Annotated[dict[str, float], _merge_float_dicts]
 
 
 class _BackgroundAsyncRunner:
@@ -149,13 +181,28 @@ class _BackgroundAsyncRunner:
 
 
 class KisaragiAgent:
-    _PERF_STEP_ORDER = ("STEP-0", "STEP-1", "STEP-2", "STEP-3", "STEP-4", "STEP-5")
+    _PERF_STEP_ORDER = (
+        "STEP-0",
+        "STEP-1",
+        "STEP-2",
+        "STEP-2M",
+        "STEP-R",
+        "STEP-3",
+        "STEP-4",
+        "STEP-4L",
+        "STEP-5G",
+        "STEP-5",
+    )
     _PERF_STEP_LABELS = {
         "STEP-0": "prepare",
         "STEP-1": "urls",
         "STEP-2": "vision",
+        "STEP-2M": "enrich_merge",
+        "STEP-R": "route",
         "STEP-3": "tools",
         "STEP-4": "reply",
+        "STEP-4L": "reply_lite",
+        "STEP-5G": "memory_gate",
         "STEP-5": "memory",
     }
 
@@ -224,6 +271,11 @@ class KisaragiAgent:
             "user_message": request.message,
             "images": list(request.images),
             "assistant_reply_sent": True,
+            "working_text_base": "",
+            "url_appendix": "",
+            "vision_appendix": "",
+            "route_choice": "",
+            "memory_gate_result": "",
             "route_decision": route_decision,
             "execution_plan": execution_plan,
             "debug": request.debug,
@@ -258,11 +310,21 @@ class KisaragiAgent:
             "vision": {
                 "default": lambda state: run_step2_vision(self, state),
             },
+            "enrich_merge": {
+                "default": lambda state: run_step_enrich_merge(self, state),
+            },
+            "route": {
+                "default": lambda state: run_step_route(self, state),
+            },
             "tools": {
                 "default": lambda state: run_step3_tools(self, state),
             },
             "reply": {
                 "default": lambda state: run_step4_reply(self, state),
+                "lite": lambda state: run_step4_reply_lite(self, state),
+            },
+            "memory_gate": {
+                "default": lambda state: run_step_memory_gate(self, state),
             },
             "memory": {
                 "default": lambda state: run_step5_memory(self, state),
@@ -330,27 +392,17 @@ class KisaragiAgent:
                 state = self._build_initial_state(request)
                 started_at = time.perf_counter()
                 execution_plan = state["execution_plan"]
-                reply_path_steps, finalize_steps = resolve_reply_first_step_groups(
-                    execution_plan,
-                    self._step_implementations(),
-                )
-
-                state = execute_resolved_steps(
-                    state=state,
-                    resolved_steps=reply_path_steps,
+                state = execute_graph_until_reply_and_finalize(
+                    initial_state=state,
+                    execution_plan=execution_plan,
+                    implementations=self._step_implementations(),
                     wrap_step=self._with_step_timing,
-                )
-
-                reply = ConversationResponse(reply=str(state.get("reply", "")))
-                self._resolve_future(loop, reply_future, result=reply)
-
-                reply_sent = bool(delivery_future.result())
-                state = {**state, "assistant_reply_sent": reply_sent}
-
-                state = execute_resolved_steps(
-                    state=state,
-                    resolved_steps=finalize_steps,
-                    wrap_step=self._with_step_timing,
+                    delivery_waiter=lambda: bool(delivery_future.result()),
+                    emit_reply=lambda reply_text: self._resolve_future(
+                        loop,
+                        reply_future,
+                        result=ConversationResponse(reply=reply_text),
+                    ),
                 )
                 total_ms = (time.perf_counter() - started_at) * 1000
                 self._log_performance_report(
@@ -981,4 +1033,5 @@ class KisaragiAgent:
         merged = dict(state.get("step_attachments", {}))
         merged[step] = value
         return merged
+
 

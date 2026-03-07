@@ -73,3 +73,10 @@ with KisaragiAgent(config) as agent:
 ## 调试日志
 
 默认日志器名：`kisaragirin.agent`。
+
+
+## 开发文档
+
+- 图与节点开发指南：GRAPH_DEVELOPMENT.md
+
+

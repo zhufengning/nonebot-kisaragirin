@@ -1,12 +1,13 @@
 ﻿from __future__ import annotations
 
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from langgraph.graph import END, START, StateGraph
 
-from .routing import ExecutionPlan, GraphNodeSpec, GraphSpec
+from .routing import ConditionalEdgeSpec, END_TARGET, ExecutionPlan, GraphSpec
 
 StepHandler = Callable[[Any], Any]
 StepImplementationRegistry = dict[str, dict[str, StepHandler]]
@@ -21,34 +22,51 @@ class StepMetadata:
 
 DEFAULT_STEP_METADATA: dict[str, dict[str, StepMetadata]] = {
     "prepare": {
-        "default": StepMetadata("STEP-0", "step0_prepare"),
+        "default": StepMetadata("STEP-0", "prepare"),
     },
     "url": {
-        "default": StepMetadata("STEP-1", "step1_urls"),
+        "default": StepMetadata("STEP-1", "url"),
     },
     "vision": {
-        "default": StepMetadata("STEP-2", "step2_vision"),
+        "default": StepMetadata("STEP-2", "vision"),
+    },
+    "enrich_merge": {
+        "default": StepMetadata("STEP-2M", "enrich_merge"),
+    },
+    "route": {
+        "default": StepMetadata("STEP-R", "route"),
     },
     "tools": {
-        "default": StepMetadata("STEP-3", "step3_tools"),
+        "default": StepMetadata("STEP-3", "tools"),
     },
     "reply": {
-        "default": StepMetadata("STEP-4", "step4_reply", emits_reply=True),
+        "default": StepMetadata("STEP-4", "reply", emits_reply=True),
+        "lite": StepMetadata("STEP-4L", "reply_lite", emits_reply=True),
+    },
+    "memory_gate": {
+        "default": StepMetadata("STEP-5G", "memory_gate"),
     },
     "memory": {
-        "default": StepMetadata("STEP-5", "step5_memory"),
+        "default": StepMetadata("STEP-5", "memory"),
     },
 }
 
 
 @dataclass(slots=True, frozen=True)
 class ResolvedStep:
+    node_id: str
     phase: str
     variant: str
     step_name: str
     node_name: str
     handler: StepHandler
     emits_reply: bool = False
+
+
+@dataclass(slots=True)
+class GraphExecutionCursor:
+    completed_node_ids: set[str]
+    selected_branch_targets: dict[str, str]
 
 
 def resolve_phase_variant(execution_plan: ExecutionPlan, phase: str) -> str:
@@ -64,7 +82,9 @@ def resolve_graph_steps(
     resolved_steps: dict[str, ResolvedStep] = {}
     step_metadata = metadata or DEFAULT_STEP_METADATA
     for node in graph_spec.nodes:
-        variant = resolve_phase_variant(execution_plan, node.phase)
+        variant = node.variant or resolve_phase_variant(execution_plan, node.phase)
+        if variant == "default":
+            variant = resolve_phase_variant(execution_plan, node.phase)
         phase_metadata = step_metadata.get(node.phase, {})
         phase_implementations = implementations.get(node.phase, {})
         step_meta = phase_metadata.get(variant)
@@ -74,6 +94,7 @@ def resolve_graph_steps(
                 f"Unsupported phase variant '{variant}' for phase '{node.phase}'"
             )
         resolved_steps[node.node_id] = ResolvedStep(
+            node_id=node.node_id,
             phase=node.phase,
             variant=variant,
             step_name=step_meta.step_name,
@@ -82,6 +103,65 @@ def resolve_graph_steps(
             emits_reply=step_meta.emits_reply,
         )
     return resolved_steps
+
+
+def _unconditional_predecessors(graph_spec: GraphSpec) -> dict[str, set[str]]:
+    predecessors: dict[str, set[str]] = defaultdict(set)
+    for source, target in graph_spec.edges:
+        predecessors[target].add(source)
+    return predecessors
+
+
+def _unconditional_successors(graph_spec: GraphSpec) -> dict[str, list[str]]:
+    successors: dict[str, list[str]] = defaultdict(list)
+    for source, target in graph_spec.edges:
+        successors[source].append(target)
+    return successors
+
+
+def _conditional_edges_by_source(
+    graph_spec: GraphSpec,
+) -> dict[str, ConditionalEdgeSpec]:
+    return {edge.source_node_id: edge for edge in graph_spec.conditional_edges}
+
+
+def _conditional_incoming_sources(graph_spec: GraphSpec) -> dict[str, set[str]]:
+    incoming: dict[str, set[str]] = defaultdict(set)
+    for edge in graph_spec.conditional_edges:
+        for target in edge.branches.values():
+            if target != END_TARGET:
+                incoming[target].add(edge.source_node_id)
+        if edge.default_target_node_id and edge.default_target_node_id != END_TARGET:
+            incoming[edge.default_target_node_id].add(edge.source_node_id)
+    return incoming
+
+
+def _active_node_ids(
+    *,
+    graph_spec: GraphSpec,
+    selected_branch_targets: dict[str, str],
+    unconditional_successors: dict[str, list[str]],
+) -> set[str]:
+    conditional_edges_by_source = _conditional_edges_by_source(graph_spec)
+    active: set[str] = set()
+    queue: deque[str] = deque(graph_spec.entry_node_ids)
+
+    while queue:
+        node_id = queue.popleft()
+        if node_id in active:
+            continue
+        active.add(node_id)
+        for target in unconditional_successors.get(node_id, []):
+            if target not in active:
+                queue.append(target)
+        conditional_edge = conditional_edges_by_source.get(node_id)
+        if conditional_edge is None:
+            continue
+        target = selected_branch_targets.get(node_id)
+        if target and target != END_TARGET and target not in active:
+            queue.append(target)
+
+    return active
 
 
 def topologically_order_steps(
@@ -125,44 +205,180 @@ def resolve_all_steps(
     return topologically_order_steps(execution_plan.graph_spec, resolved_steps)
 
 
-def split_resolved_steps_for_reply_first(
-    resolved_steps: list[ResolvedStep],
-) -> tuple[list[ResolvedStep], list[ResolvedStep]]:
-    emit_index = next(
-        (index for index, step in enumerate(resolved_steps) if step.emits_reply),
-        None,
-    )
-    if emit_index is None:
-        raise ValueError("Execution plan does not define any reply-emitting step")
-    reply_path_steps = resolved_steps[: emit_index + 1]
-    finalize_steps = resolved_steps[emit_index + 1 :]
-    return reply_path_steps, finalize_steps
+def _merge_parallel_updates(
+    state: dict[str, Any],
+    updates_list: list[dict[str, Any]],
+) -> dict[str, Any]:
+    merged_state = dict(state)
+    merged_dict_keys = {"step_attachments", "step_durations_ms"}
+    batch_scalar_updates: dict[str, Any] = {}
+
+    for updates in updates_list:
+        for key, value in updates.items():
+            if key in merged_dict_keys:
+                existing = dict(merged_state.get(key, {}))
+                existing.update(dict(value or {}))
+                merged_state[key] = existing
+                continue
+            if key in batch_scalar_updates and batch_scalar_updates[key] != value:
+                raise ValueError(f"Parallel nodes produced conflicting updates for key '{key}'")
+            batch_scalar_updates[key] = value
+
+    merged_state.update(batch_scalar_updates)
+    return merged_state
 
 
-def resolve_reply_first_step_groups(
+def _node_is_ready(
+    node_id: str,
+    *,
+    graph_spec: GraphSpec,
+    active_node_ids: set[str],
+    completed_node_ids: set[str],
+    selected_branch_targets: dict[str, str],
+    unconditional_predecessors: dict[str, set[str]],
+    conditional_incoming_sources: dict[str, set[str]],
+) -> bool:
+    if node_id not in active_node_ids:
+        return False
+    if node_id in completed_node_ids:
+        return False
+    active_unconditional_predecessors = unconditional_predecessors.get(node_id, set()) & active_node_ids
+    active_conditional_sources = conditional_incoming_sources.get(node_id, set()) & active_node_ids
+    if not active_unconditional_predecessors and not active_conditional_sources:
+        return node_id in graph_spec.entry_node_ids
+    if not active_unconditional_predecessors.issubset(completed_node_ids):
+        return False
+    if not active_conditional_sources:
+        return True
+    return any(selected_branch_targets.get(source) == node_id for source in active_conditional_sources)
+
+
+def _run_ready_batch(
+    *,
+    state: dict[str, Any],
+    ready_node_ids: list[str],
+    resolved_steps: dict[str, ResolvedStep],
+    wrap_step: Callable[[str, StepHandler], StepHandler],
+) -> dict[str, Any]:
+    ordered_steps = [resolved_steps[node_id] for node_id in ready_node_ids]
+    if len(ordered_steps) == 1:
+        updates = [
+            wrap_step(ordered_steps[0].step_name, ordered_steps[0].handler)(state)
+        ]
+        return _merge_parallel_updates(state, updates)
+
+    with ThreadPoolExecutor(max_workers=len(ordered_steps)) as executor:
+        futures = [
+            executor.submit(wrap_step(step.step_name, step.handler), state)
+            for step in ordered_steps
+        ]
+        updates = [future.result() for future in futures]
+    return _merge_parallel_updates(state, updates)
+
+
+def _next_ready_nodes(
+    *,
+    graph_spec: GraphSpec,
+    ordered_node_ids: list[str],
+    active_node_ids: set[str],
+    completed_node_ids: set[str],
+    selected_branch_targets: dict[str, str],
+    unconditional_predecessors: dict[str, set[str]],
+    conditional_incoming_sources: dict[str, set[str]],
+) -> list[str]:
+    return [
+        node_id
+        for node_id in ordered_node_ids
+        if _node_is_ready(
+            node_id,
+            graph_spec=graph_spec,
+            active_node_ids=active_node_ids,
+            completed_node_ids=completed_node_ids,
+            selected_branch_targets=selected_branch_targets,
+            unconditional_predecessors=unconditional_predecessors,
+            conditional_incoming_sources=conditional_incoming_sources,
+        )
+    ]
+
+
+def execute_graph_until_reply_and_finalize(
+    *,
+    initial_state: dict[str, Any],
     execution_plan: ExecutionPlan,
     implementations: StepImplementationRegistry,
+    wrap_step: Callable[[str, StepHandler], StepHandler],
+    delivery_waiter: Callable[[], bool],
+    emit_reply: Callable[[str], None],
     metadata: dict[str, dict[str, StepMetadata]] | None = None,
-) -> tuple[list[ResolvedStep], list[ResolvedStep]]:
-    resolved_steps = resolve_all_steps(
+) -> dict[str, Any]:
+    graph_spec = execution_plan.graph_spec
+    resolved_steps = resolve_graph_steps(
         execution_plan,
+        graph_spec,
         implementations,
         metadata,
     )
-    return split_resolved_steps_for_reply_first(resolved_steps)
+    ordered_node_ids = [node.node_id for node in graph_spec.nodes]
+    conditional_edges_by_source = _conditional_edges_by_source(graph_spec)
+    unconditional_predecessors = _unconditional_predecessors(graph_spec)
+    unconditional_successors = _unconditional_successors(graph_spec)
+    conditional_incoming_sources = _conditional_incoming_sources(graph_spec)
+    completed_node_ids: set[str] = set()
+    selected_branch_targets: dict[str, str] = {}
+    state = dict(initial_state)
+    reply_emitted = False
 
+    while True:
+        active_node_ids = _active_node_ids(
+            graph_spec=graph_spec,
+            selected_branch_targets=selected_branch_targets,
+            unconditional_successors=unconditional_successors,
+        )
+        ready_node_ids = _next_ready_nodes(
+            graph_spec=graph_spec,
+            ordered_node_ids=ordered_node_ids,
+            active_node_ids=active_node_ids,
+            completed_node_ids=completed_node_ids,
+            selected_branch_targets=selected_branch_targets,
+            unconditional_predecessors=unconditional_predecessors,
+            conditional_incoming_sources=conditional_incoming_sources,
+        )
+        if not ready_node_ids:
+            break
 
-def execute_resolved_steps(
-    *,
-    state: Any,
-    resolved_steps: list[ResolvedStep],
-    wrap_step: Callable[[str, StepHandler], StepHandler],
-) -> Any:
-    current_state = state
-    for resolved_step in resolved_steps:
-        updates = wrap_step(resolved_step.step_name, resolved_step.handler)(current_state)
-        current_state = {**current_state, **updates}
-    return current_state
+        state = _run_ready_batch(
+            state=state,
+            ready_node_ids=ready_node_ids,
+            resolved_steps=resolved_steps,
+            wrap_step=wrap_step,
+        )
+        completed_node_ids.update(ready_node_ids)
+
+        for node_id in ready_node_ids:
+            conditional_edge = conditional_edges_by_source.get(node_id)
+            if conditional_edge is None:
+                continue
+            branch_value = str(state.get(conditional_edge.condition_key, ""))
+            target = conditional_edge.branches.get(
+                branch_value,
+                conditional_edge.default_target_node_id,
+            )
+            if target and target != END_TARGET:
+                selected_branch_targets[node_id] = target
+            elif node_id in selected_branch_targets:
+                selected_branch_targets.pop(node_id, None)
+
+        emitted_in_batch = [
+            resolved_steps[node_id]
+            for node_id in ready_node_ids
+            if resolved_steps[node_id].emits_reply
+        ]
+        if emitted_in_batch and not reply_emitted:
+            reply_emitted = True
+            emit_reply(str(state.get("reply", "")))
+            state = {**state, "assistant_reply_sent": bool(delivery_waiter())}
+
+    return state
 
 
 def build_graph_for_execution_plan(
@@ -180,6 +396,7 @@ def build_graph_for_execution_plan(
         implementations,
         metadata,
     )
+    conditional_edges_by_source = _conditional_edges_by_source(execution_plan.graph_spec)
     for resolved_step in resolved_steps.values():
         graph.add_node(
             resolved_step.node_name,
@@ -190,6 +407,21 @@ def build_graph_for_execution_plan(
         graph.add_edge(START, entry_node_id)
     for source, target in execution_plan.graph_spec.edges:
         graph.add_edge(source, target)
+    for conditional_edge in execution_plan.graph_spec.conditional_edges:
+        branches = dict(conditional_edge.branches)
+        if conditional_edge.default_target_node_id is not None:
+            branches.setdefault("__default__", conditional_edge.default_target_node_id)
+
+        def _router(state: dict[str, Any], *, condition_key: str = conditional_edge.condition_key) -> str:
+            value = str(state.get(condition_key, ""))
+            return value or "__default__"
+
+        target_map = {
+            key: (END if value == END_TARGET else value)
+            for key, value in branches.items()
+        }
+        graph.add_conditional_edges(conditional_edge.source_node_id, _router, target_map)
     for exit_node_id in execution_plan.graph_spec.exit_node_ids:
-        graph.add_edge(exit_node_id, END)
+        if exit_node_id not in conditional_edges_by_source:
+            graph.add_edge(exit_node_id, END)
     return graph.compile()

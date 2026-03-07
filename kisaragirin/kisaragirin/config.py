@@ -25,6 +25,7 @@ class StepModelIds:
     tool: str
     reply: str
     memory: str
+    route: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -99,3 +100,4 @@ class ConversationRequest:
 @dataclass(slots=True)
 class ConversationResponse:
     reply: str
+

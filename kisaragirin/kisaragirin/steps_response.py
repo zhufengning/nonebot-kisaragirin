@@ -7,8 +7,12 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from .prompts import MEMORY_JSON_INSTRUCTION
 
 
-def run_step4_reply(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
-    model = agent._model(agent._config.step_models.reply)
+def _reply_model(agent: Any):
+    return agent._model(agent._config.step_models.reply)
+
+
+def _run_reply(agent: Any, state: dict[str, Any], *, step_name: str = "STEP-4") -> dict[str, Any]:
+    model = _reply_model(agent)
     reply_msg = model.invoke(
         [
             SystemMessage(content=agent._system_prompt("reply")),
@@ -16,21 +20,45 @@ def run_step4_reply(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         ]
     )
     reply_text = agent._message_to_text(reply_msg.content)
-    attachment = "[STEP-4-REPLY]\n" + reply_text
-    agent._log_step_debug(state, "STEP-4", attachment)
+    attachment = f"[{step_name}-REPLY]\n" + reply_text
+    agent._log_step_debug(state, step_name, attachment)
     return {
         "reply": reply_text,
-        "step_attachments": agent._set_attachment(state, "STEP-4", attachment),
+        "step_attachments": agent._set_attachment(state, step_name, attachment),
+    }
+
+
+def run_step4_reply(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+    return _run_reply(agent, state, step_name="STEP-4")
+
+
+def run_step4_reply_lite(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+    return _run_reply(agent, state, step_name="STEP-4L")
+
+
+def run_step_memory_gate(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+    should_update_memory = bool(state.get("assistant_reply_sent", True)) and bool(
+        str(state.get("reply", "")).strip()
+    ) and str(state.get("reply", "")).strip() != "bot选择沉默"
+    memory_gate_result = "update" if should_update_memory else "skip"
+    attachment = (
+        "[STEP-5G-MEMORY-GATE]\n"
+        f"memory_gate_result={memory_gate_result}"
+    )
+    agent._log_step_debug(state, "STEP-5G", attachment)
+    return {
+        "memory_gate_result": memory_gate_result,
+        "step_attachments": agent._set_attachment(state, "STEP-5G", attachment),
     }
 
 
 def run_step5_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
-    if not bool(state.get("assistant_reply_sent", True)):
+    if str(state.get("memory_gate_result", "update")) != "update":
         attachment = (
             "[STEP-5-MEMORY-UPDATE]\n"
             "long_term_memory_updated=false\n"
             "short_term_memory_appended=none\n"
-            "skipped_reason=assistant_reply_not_sent"
+            f"skipped_reason={state.get('memory_gate_result', 'skip')}"
         )
         agent._log_step_debug(state, "STEP-5", attachment)
         return {

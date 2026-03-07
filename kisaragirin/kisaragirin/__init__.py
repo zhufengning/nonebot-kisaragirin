@@ -9,10 +9,17 @@ from .config import (
     PromptConfig,
     StepModelIds,
 )
-from .routing import ExecutionPlan, GraphNodeSpec, GraphSpec, RouteDecision
+from .routing import (
+    ConditionalEdgeSpec,
+    ExecutionPlan,
+    GraphNodeSpec,
+    GraphSpec,
+    RouteDecision,
+)
 
 __all__ = [
     "AgentConfig",
+    "ConditionalEdgeSpec",
     "ConversationRequest",
     "ConversationResponse",
     "CrawlerConfig",

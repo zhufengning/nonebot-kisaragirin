@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 
 DEFAULT_ROUTE_ID = "default"
+LITE_CHAT_ROUTE_ID = "lite_chat"
+END_TARGET = "__END__"
 
 
 @dataclass(slots=True, frozen=True)
@@ -13,11 +15,20 @@ class GraphNodeSpec:
 
 
 @dataclass(slots=True, frozen=True)
+class ConditionalEdgeSpec:
+    source_node_id: str
+    condition_key: str
+    branches: dict[str, str] = field(default_factory=dict)
+    default_target_node_id: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class GraphSpec:
     nodes: tuple[GraphNodeSpec, ...]
     edges: tuple[tuple[str, str], ...]
     entry_node_ids: tuple[str, ...]
     exit_node_ids: tuple[str, ...]
+    conditional_edges: tuple[ConditionalEdgeSpec, ...] = ()
 
 
 DEFAULT_SHARED_PRELUDE_GRAPH = GraphSpec(
@@ -25,30 +36,60 @@ DEFAULT_SHARED_PRELUDE_GRAPH = GraphSpec(
         GraphNodeSpec(node_id="prepare", phase="prepare"),
         GraphNodeSpec(node_id="url", phase="url"),
         GraphNodeSpec(node_id="vision", phase="vision"),
+        GraphNodeSpec(node_id="enrich_merge", phase="enrich_merge"),
     ),
     edges=(
         ("prepare", "url"),
-        ("url", "vision"),
+        ("prepare", "vision"),
+        ("url", "enrich_merge"),
+        ("vision", "enrich_merge"),
     ),
     entry_node_ids=("prepare",),
-    exit_node_ids=("vision",),
+    exit_node_ids=("enrich_merge",),
 )
 
 DEFAULT_ROUTE_MIDDLE_GRAPH = GraphSpec(
     nodes=(
+        GraphNodeSpec(node_id="route", phase="route"),
         GraphNodeSpec(node_id="tools", phase="tools"),
-        GraphNodeSpec(node_id="reply", phase="reply"),
+        GraphNodeSpec(node_id="reply", phase="reply", variant="default"),
+        GraphNodeSpec(node_id="reply_lite", phase="reply", variant="lite"),
     ),
     edges=(("tools", "reply"),),
-    entry_node_ids=("tools",),
-    exit_node_ids=("reply",),
+    entry_node_ids=("route",),
+    exit_node_ids=("reply", "reply_lite"),
+    conditional_edges=(
+        ConditionalEdgeSpec(
+            source_node_id="route",
+            condition_key="route_choice",
+            branches={
+                DEFAULT_ROUTE_ID: "tools",
+                LITE_CHAT_ROUTE_ID: "reply_lite",
+            },
+            default_target_node_id="tools",
+        ),
+    ),
 )
 
 DEFAULT_SHARED_FINALIZE_GRAPH = GraphSpec(
-    nodes=(GraphNodeSpec(node_id="memory", phase="memory"),),
+    nodes=(
+        GraphNodeSpec(node_id="memory_gate", phase="memory_gate"),
+        GraphNodeSpec(node_id="memory", phase="memory"),
+    ),
     edges=(),
-    entry_node_ids=("memory",),
+    entry_node_ids=("memory_gate",),
     exit_node_ids=("memory",),
+    conditional_edges=(
+        ConditionalEdgeSpec(
+            source_node_id="memory_gate",
+            condition_key="memory_gate_result",
+            branches={
+                "update": "memory",
+                "skip": END_TARGET,
+            },
+            default_target_node_id=END_TARGET,
+        ),
+    ),
 )
 
 
@@ -89,13 +130,21 @@ def build_default_route_decision() -> RouteDecision:
 def compose_graph_segments(*segments: GraphSpec) -> GraphSpec:
     active_segments = [segment for segment in segments if segment.nodes]
     if not active_segments:
-        return GraphSpec(nodes=(), edges=(), entry_node_ids=(), exit_node_ids=())
+        return GraphSpec(
+            nodes=(),
+            edges=(),
+            entry_node_ids=(),
+            exit_node_ids=(),
+            conditional_edges=(),
+        )
 
     nodes: list[GraphNodeSpec] = []
     edges: list[tuple[str, str]] = []
+    conditional_edges: list[ConditionalEdgeSpec] = []
     for index, segment in enumerate(active_segments):
         nodes.extend(segment.nodes)
         edges.extend(segment.edges)
+        conditional_edges.extend(segment.conditional_edges)
         if index == 0:
             continue
         previous = active_segments[index - 1]
@@ -108,6 +157,7 @@ def compose_graph_segments(*segments: GraphSpec) -> GraphSpec:
         edges=tuple(edges),
         entry_node_ids=tuple(active_segments[0].entry_node_ids),
         exit_node_ids=tuple(active_segments[-1].exit_node_ids),
+        conditional_edges=tuple(conditional_edges),
     )
 
 

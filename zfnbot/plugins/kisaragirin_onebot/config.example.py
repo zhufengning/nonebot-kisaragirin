@@ -18,6 +18,14 @@ PLUGIN_CONFIG = PluginConfig(
     ),
     models=(
         ModelConfig(
+            id="lite",
+            provider="openai",
+            base_url="https://api.siliconflow.cn/v1",
+            api_key="sk-",
+            model="Qwen/Qwen3-8B",
+            extra_body={"enable_thinking": False},
+        ),
+        ModelConfig(
             id="vision",
             provider="siliconflow",
             base_url="https://api.siliconflow.cn/v1",
@@ -37,6 +45,7 @@ PLUGIN_CONFIG = PluginConfig(
         summarize="kimi",
         vision="vision",
         tool="kimi",
+        route="lite",
         reply="kimi",
         memory="kimi",
     ),
@@ -48,3 +57,5 @@ PLUGIN_CONFIG = PluginConfig(
         ),
     },
 )
+
+

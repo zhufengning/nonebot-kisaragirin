@@ -77,7 +77,7 @@
    - 目标结构：`prepare -> 并行(url, vision) -> route -> route-specific middle -> memory`。
    - 让图只描述 phase 编排，具体执行函数从 step registry / variant registry 解析。
 
-16. 前中后段全部图化，移除线性过渡层
+16. [x] 前中后段全部图化，移除线性过渡层
    - 不仅 route-specific middle 要支持图结构，shared prelude 与 shared finalize 也统一表达成图或子图规范。
    - 做完后不再保留“线性 phase 列表 -> 图装配”的过渡逻辑，统一由 graph spec / subgraph builder 直接产出 LangGraph 拓扑。
    - 目标是让 `prepare`、`url/vision` 并行、route middle、`memory` 收尾都处在同一种图抽象之下。
@@ -116,6 +116,7 @@
 - 第二阶段：5 -> 6 -> 7
 - 第三阶段：8 -> 9 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16 -> 17 -> 18 -> 19
 - 第四阶段：20 -> 21 -> 22
+
 
 
 
