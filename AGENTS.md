@@ -1,4 +1,4 @@
-# bot_renew 项目信息
+﻿# bot_renew 项目信息
 
 请在做出任何修改后检查是否需要更新README.md(包括根目录和kisaragirin的)和AGENTS.md
 
@@ -11,9 +11,15 @@
 ## 代码结构
 
 - `bot.py`：启动入口，注册 OneBot V11 适配器并加载 `zfnbot/plugins`。
-- `zfnbot/plugins/kisaragirin_onebot/__init__.py`：群消息接入、队列、触发策略、发送回复、管理指令（`/help`、`/clear`、`/clears`、`/clearl`）。
+- `zfnbot/plugins/kisaragirin_onebot/__init__.py`：插件入口，仅负责注册消息/指令处理器与关闭钩子。
+- `zfnbot/plugins/kisaragirin_onebot/handlers.py`：群消息接入与入队入口。
+- `zfnbot/plugins/kisaragirin_onebot/parser.py`：消息段解析、reply 递归加载、图片提取。
+- `zfnbot/plugins/kisaragirin_onebot/scheduler.py`：队列触发策略、发送回复、worker 刷新。
+- `zfnbot/plugins/kisaragirin_onebot/ops.py`：管理指令匹配与执行（`/help`、`/clear`、`/clears`、`/clearl`）。
+- `zfnbot/plugins/kisaragirin_onebot/state.py`：群状态、Agent 缓存、清理与关闭逻辑。
 - `zfnbot/plugins/kisaragirin_onebot/payload.py`：将消息序列化为 YAML，并构造 `ConversationRequest`。
-- `zfnbot/plugins/kisaragirin_onebot/config.py`：插件配置（模型、分步模型映射、群配置、ops、定时参数、API Key、debug）。
+- `zfnbot/plugins/kisaragirin_onebot/config_schema.py`：插件配置结构定义。
+- `zfnbot/plugins/kisaragirin_onebot/config.py`：插件实际运行配置。
 - `kisaragirin/kisaragirin/agent.py`：Agent 主流程（step0~step5）。
 - `kisaragirin/kisaragirin/tools.py`：内置工具（`read_url`、可选 `exa_search`、可选 `web_search`〔优先 Exa，回退 Brave〕、可选 `scholar_search`）。
 - `kisaragirin/kisaragirin/memory.py`：SQLite 记忆与缓存存储。
@@ -77,3 +83,6 @@
 
 - 安装依赖：`uv sync`
 - 启动：`python bot.py`
+
+
+

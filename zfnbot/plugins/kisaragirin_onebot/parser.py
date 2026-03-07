@@ -1,0 +1,596 @@
+﻿from __future__ import annotations
+
+import base64
+import csv
+import mimetypes
+import re
+from pathlib import Path
+from typing import Any
+from urllib.parse import unquote_to_bytes
+
+import httpx
+from kisaragirin import ImageInput
+from nonebot import logger
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent, MessageSegment
+
+from .payload import MessageData, MessageSegmentData
+
+AT_TEXT_PATTERNS = (
+    re.compile(r"\[at:qq=(\d+)\]"),
+    re.compile(r"\[CQ:at,qq=(\d+)\]"),
+)
+MAX_REPLY_DEPTH = 4
+_QQ_FACE_ID_TO_NAME: dict[str, str] | None = None
+def _load_qq_face_map() -> dict[str, str]:
+    path = Path(__file__).with_name("qq_faces.csv")
+    mapping: dict[str, str] = {}
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                face_id = str(row.get("表情 ID") or "").strip()
+                meaning = str(row.get("表情含义") or "").strip()
+                if not face_id or not meaning:
+                    continue
+                mapping[face_id] = meaning
+    except Exception:
+        logger.opt(exception=True).warning("load qq face map failed: {}", path)
+    return mapping
+
+
+def _qq_face_name(face_id: str) -> str:
+    global _QQ_FACE_ID_TO_NAME
+    if _QQ_FACE_ID_TO_NAME is None:
+        _QQ_FACE_ID_TO_NAME = _load_qq_face_map()
+    return _QQ_FACE_ID_TO_NAME.get(face_id, "")
+
+def _sender_name(event: GroupMessageEvent) -> str:
+    sender = event.sender
+    if sender:
+        card = str(getattr(sender, "card", "") or "").strip()
+        if card:
+            return card
+        nickname = str(getattr(sender, "nickname", "") or "").strip()
+        if nickname:
+            return nickname
+    return str(event.user_id)
+
+
+def _sender_name_from_dict(sender: dict[str, Any], user_id: int) -> str:
+    card = str(sender.get("card") or "").strip()
+    if card:
+        return card
+    nickname = str(sender.get("nickname") or "").strip()
+    if nickname:
+        return nickname
+    return str(user_id)
+
+
+def _image_input_from_data_uri(uri: str, image_name: str | None) -> MessageSegmentData | None:
+    if not uri.startswith("data:"):
+        return None
+    if "," not in uri:
+        return None
+    header, data = uri.split(",", 1)
+    mime_type = header[5:].split(";", 1)[0].strip() or "image/png"
+    if ";base64" in header:
+        base64_data = data
+    else:
+        base64_data = base64.b64encode(unquote_to_bytes(data)).decode("ascii")
+    return MessageSegmentData(
+        type="image",
+        image_name=image_name,
+        image=ImageInput(
+            base64_data=base64_data,
+            mime_type=mime_type,
+            name=image_name,
+        ),
+    )
+
+
+async def _image_segment_to_data(bot: Bot, segment: MessageSegment) -> MessageSegmentData | None:
+    file_ref = str(segment.data.get("file") or "").strip()
+    image_url = str(segment.data.get("url") or "").strip()
+    image_name = file_ref or None
+
+    data_uri_segment = _image_input_from_data_uri(file_ref, image_name)
+    if data_uri_segment is not None:
+        return data_uri_segment
+
+    data_uri_segment = _image_input_from_data_uri(image_url, image_name)
+    if data_uri_segment is not None:
+        return data_uri_segment
+
+    content: bytes | None = None
+    mime_type: str | None = None
+
+    if False and file_ref:
+        try:
+            image_info = await bot.get_image(file=file_ref)
+            if isinstance(image_info, dict):
+                image_file = image_info.get("file")
+                if isinstance(image_file, str) and image_file:
+                    file_path = Path(image_file)
+                    if file_path.is_file():
+                        content = file_path.read_bytes()
+                        image_name = image_name or file_path.name
+                        guessed = mimetypes.guess_type(file_path.name)[0]
+                        if guessed and guessed.startswith("image/"):
+                            mime_type = guessed
+                if content is None:
+                    fetched_url = image_info.get("url")
+                    if isinstance(fetched_url, str) and fetched_url:
+                        image_url = fetched_url
+        except Exception:
+            logger.opt(exception=True).debug("onebot get_image failed: file={}", file_ref)
+
+    if content is None and image_url:
+        try:
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+                response = await client.get(image_url)
+                response.raise_for_status()
+                content = response.content
+                content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                if content_type.startswith("image/"):
+                    mime_type = content_type
+        except Exception:
+            logger.warning("download image failed, skip one segment")
+            return None
+
+    if not content:
+        return None
+
+    if not mime_type:
+        guessed = mimetypes.guess_type(image_name or "")[0]
+        mime_type = guessed if guessed and guessed.startswith("image/") else "image/png"
+
+    return MessageSegmentData(
+        type="image",
+        image_name=image_name,
+        image=ImageInput(
+            base64_data=base64.b64encode(content).decode("ascii"),
+            mime_type=mime_type,
+            name=image_name,
+        ),
+    )
+
+
+def _normalize_message_id(raw_message_id: Any) -> int | str | None:
+    if raw_message_id is None:
+        return None
+    if isinstance(raw_message_id, int):
+        return raw_message_id
+    text = str(raw_message_id).strip()
+    if not text:
+        return None
+    return int(text) if text.isdigit() else text
+
+
+def _coerce_to_message(raw_message: Any) -> Message:
+    if isinstance(raw_message, Message):
+        return raw_message
+    if isinstance(raw_message, str):
+        return Message(raw_message)
+
+    normalized: list[Any]
+    if isinstance(raw_message, dict):
+        normalized = [raw_message]
+    elif isinstance(raw_message, (list, tuple)):
+        normalized = list(raw_message)
+    else:
+        return Message(str(raw_message or ""))
+
+    message = Message()
+    for item in normalized:
+        if isinstance(item, MessageSegment):
+            message.append(item)
+            continue
+        if isinstance(item, dict):
+            segment_type = str(item.get("type") or "").strip()
+            segment_data = item.get("data")
+            if segment_type and isinstance(segment_data, dict):
+                message.append(MessageSegment(segment_type, segment_data))
+                continue
+        if isinstance(item, str) and item:
+            message.append(MessageSegment.text(item))
+
+    if not message and raw_message is not None:
+        return Message(str(raw_message))
+    return message
+
+
+async def _load_reply_message(
+    bot: Bot,
+    *,
+    group_id: int,
+    reply_message_id: str,
+    bot_id: str,
+    depth: int,
+    seen: set[str],
+) -> MessageData | None:
+    if depth > MAX_REPLY_DEPTH:
+        logger.debug(
+            "reply chain exceeded max depth group={} reply_message_id={} depth={}",
+            group_id,
+            reply_message_id,
+            depth,
+        )
+        return None
+    if reply_message_id in seen:
+        logger.debug(
+            "reply chain loop detected group={} reply_message_id={} depth={}",
+            group_id,
+            reply_message_id,
+            depth,
+        )
+        return None
+
+    normalized_message_id = _normalize_message_id(reply_message_id)
+    if normalized_message_id is None:
+        return None
+
+    seen.add(reply_message_id)
+    try:
+        response = await bot.get_msg(message_id=normalized_message_id)
+    except Exception:
+        logger.warning(
+            "get_msg failed group={} reply_message_id={} depth={}",
+            group_id,
+            reply_message_id,
+            depth,
+        )
+        return None
+
+    if not isinstance(response, dict):
+        return None
+    message_id = response.get("message_id", reply_message_id)
+    sender = response.get("sender")
+    sender_info = sender if isinstance(sender, dict) else {}
+    user_id_raw = response.get("user_id", sender_info.get("user_id", 0))
+    user_id = int(user_id_raw) if str(user_id_raw).isdigit() else 0
+    created_at_raw = response.get("time", 0.0)
+    try:
+        created_at = float(created_at_raw)
+    except Exception:
+        created_at = 0.0
+
+    raw_message = response.get("message")
+    message_obj = _coerce_to_message(raw_message)
+    segments, _, has_unknown_segment = await _parse_segments(
+        bot,
+        message=message_obj,
+        bot_id=bot_id,
+        group_id=group_id,
+        message_id=message_id,
+        mentioned_bot=False,
+        detect_mention=False,
+        depth=depth,
+        seen=seen,
+    )
+    return MessageData(
+        message_id=message_id,
+        created_at=created_at,
+        sender_id=user_id,
+        sender_name=_sender_name_from_dict(sender_info, user_id),
+        mentioned_bot=False,
+        segments=segments,
+        has_unknown_segment=has_unknown_segment,
+    )
+
+
+async def _parse_segments(
+    bot: Bot,
+    *,
+    message: Message,
+    bot_id: str,
+    group_id: int,
+    message_id: int | str,
+    mentioned_bot: bool,
+    detect_mention: bool,
+    depth: int,
+    seen: set[str],
+) -> tuple[list[MessageSegmentData], bool, bool]:
+    segments: list[MessageSegmentData] = []
+    has_unknown_segment = False
+    member_name_cache: dict[int, str] = {}
+
+    async def _member_display_name(user_id: int) -> str:
+        cached = member_name_cache.get(user_id)
+        if cached is not None:
+            return cached
+        name = str(user_id)
+        try:
+            info = await bot.get_group_member_info(group_id=group_id, user_id=user_id)
+            if isinstance(info, dict):
+                nickname = str(info.get("nickname") or "").strip()
+                name = nickname or name
+        except Exception:
+            logger.opt(exception=True).debug(
+                "get_group_member_info failed group={} message_id={} user_id={}",
+                group_id,
+                message_id,
+                user_id,
+            )
+        member_name_cache[user_id] = name
+        return name
+
+    for idx, segment in enumerate(message, start=1):
+        segment_type = segment.type
+        segment_data = dict(segment.data)
+        logger.debug(
+            "segment detected group={} message_id={} index={} depth={} type={} data={}",
+            group_id,
+            message_id,
+            idx,
+            depth,
+            segment_type,
+            segment_data,
+        )
+
+        if detect_mention:
+            qq_value = segment_data.get("qq")
+            if qq_value is not None:
+                at_target = str(qq_value).strip()
+                if at_target == bot_id:
+                    mentioned_bot = True
+                    logger.info(
+                        "bot mention matched group={} message_id={} index={} target={}",
+                        group_id,
+                        message_id,
+                        idx,
+                        at_target,
+                    )
+
+        if segment_type == "reply":
+            reply_raw_id = segment_data.get("id", segment_data.get("message_id"))
+            reply_message_id = str(reply_raw_id or "").strip()
+            if not reply_message_id:
+                continue
+            reply_message = await _load_reply_message(
+                bot,
+                group_id=group_id,
+                reply_message_id=reply_message_id,
+                bot_id=bot_id,
+                depth=depth + 1,
+                seen=seen,
+            )
+            segments.append(
+                MessageSegmentData(
+                    type="reply",
+                    reply_message_id=reply_message_id,
+                    reply=reply_message,
+                )
+            )
+            continue
+
+        if segment_type in {"at", "mention"}:
+            qq_value = segment_data.get("qq") or segment_data.get("user_id") or segment_data.get("id")
+            target = str(qq_value or "").strip()
+            if not target:
+                continue
+
+            if segments and segments[-1].type == "text" and segments[-1].text.strip() == "@":
+                segments.pop()
+
+            if target.lower() == "all":
+                segments.append(
+                    MessageSegmentData(
+                        type="at",
+                        text="@全体成员",
+                        at_name="全体成员",
+                    )
+                )
+                continue
+
+            user_id = int(target) if target.isdigit() else 0
+            name = await _member_display_name(user_id) if user_id else target
+            segments.append(
+                MessageSegmentData(
+                    type="at",
+                    text=f"@{name}",
+                    at_user_id=user_id or None,
+                    at_name=str(name),
+                )
+            )
+            continue
+
+        if segment_type == "text":
+            text = str(segment_data.get("text", ""))
+            if text:
+                if detect_mention and not mentioned_bot:
+                    for pattern in AT_TEXT_PATTERNS:
+                        match = pattern.search(text)
+                        if match and match.group(1) == bot_id:
+                            mentioned_bot = True
+                            logger.info(
+                                "bot mention matched from text group={} message_id={} index={}",
+                                group_id,
+                                message_id,
+                                idx,
+                            )
+                            break
+                segments.append(MessageSegmentData(type="text", text=text))
+            continue
+
+        if segment_type == "image":
+            image_segment = await _image_segment_to_data(bot, segment)
+            if image_segment is not None:
+                segments.append(image_segment)
+            continue
+
+        if segment_type == "face":
+            raw_face = segment_data.get("raw")
+            face_text = ""
+            if isinstance(raw_face, dict):
+                face_text = str(raw_face.get("faceText") or "").strip()
+            if face_text.startswith("/"):
+                face_text = face_text[1:].strip()
+
+            if face_text:
+                name = face_text
+            else:
+                face_id = str(segment_data.get("id") or "").strip()
+                if not face_id:
+                    continue
+                name = _qq_face_name(face_id) or face_id
+            segments.append(MessageSegmentData(type="text", text=f"[face:{name}]"))
+            continue
+
+        has_unknown_segment = True
+        logger.debug(
+            "unknown segment kept only in merged_text group={} message_id={} index={} depth={} type={}",
+            group_id,
+            message_id,
+            idx,
+            depth,
+            segment_type,
+        )
+
+    return segments, mentioned_bot, has_unknown_segment
+
+
+async def _parse_message(
+    bot: Bot,
+    event: GroupMessageEvent,
+    bot_id: str,
+) -> tuple[list[MessageSegmentData], bool, bool]:
+    mentioned_bot = bool(event.is_tome())
+    raw_message = str(getattr(event, "raw_message", "") or "")
+    message_for_parse = _coerce_to_message(getattr(event, "original_message", event.message))
+    plaintext = ""
+    extract_plaintext = ""
+    try:
+        get_plaintext = getattr(event, "get_plaintext", None)
+        if callable(get_plaintext):
+            plaintext = str(get_plaintext() or "")
+    except Exception:
+        plaintext = ""
+    try:
+        extract_plaintext = str(event.message.extract_plain_text() or "")
+    except Exception:
+        extract_plaintext = ""
+    try:
+        segment_types = [f"{idx}:{seg.type}" for idx, seg in enumerate(event.message, start=1)]
+    except Exception:
+        segment_types = []
+    try:
+        original_message_obj = getattr(event, "original_message", None)
+        original_segment_types = (
+            [f"{idx}:{seg.type}" for idx, seg in enumerate(original_message_obj, start=1)]
+            if isinstance(original_message_obj, Message)
+            else []
+        )
+    except Exception:
+        original_segment_types = []
+    logger.debug(
+        "message meta group={} message_id={} to_me={} raw_message={}",
+        event.group_id,
+        event.message_id,
+        mentioned_bot,
+        raw_message,
+    )
+    logger.info(
+        "incoming segments group={} message_id={} segment_types={}",
+        event.group_id,
+        event.message_id,
+        segment_types,
+    )
+    if original_segment_types:
+        logger.info(
+            "incoming original_message segments group={} message_id={} original_segment_types={}",
+            event.group_id,
+            event.message_id,
+            original_segment_types,
+        )
+    logger.info(
+        "incoming text views group={} message_id={} raw_message={} get_plaintext={} extract_plain_text={}",
+        event.group_id,
+        event.message_id,
+        raw_message,
+        plaintext,
+        extract_plaintext,
+    )
+    if mentioned_bot:
+        logger.info(
+            "bot mention inferred by to_me group={} message_id={}",
+            event.group_id,
+            event.message_id,
+        )
+
+    event_reply = getattr(event, "reply", None)
+    prefixed_reply_segment: MessageSegmentData | None = None
+    has_reply_seg = False
+    try:
+        has_reply_seg = any(seg.type == "reply" for seg in message_for_parse)
+    except Exception:
+        has_reply_seg = False
+    if event_reply is not None and not has_reply_seg:
+        logger.debug(
+            "event.reply detected group={} message_id={} reply={}",
+            event.group_id,
+            event.message_id,
+            event_reply,
+        )
+        event_reply_id = str(getattr(event_reply, "message_id", "") or "").strip()
+        if event_reply_id:
+            nested_reply = await _load_reply_message(
+                bot,
+                group_id=event.group_id,
+                reply_message_id=event_reply_id,
+                bot_id=bot_id,
+                depth=1,
+                seen=set(),
+            )
+            if nested_reply is None:
+                reply_message_obj = getattr(event_reply, "message", Message())
+                reply_sender = getattr(event_reply, "sender", None)
+                reply_sender_dict = (
+                    reply_sender.model_dump() if hasattr(reply_sender, "model_dump") else {}
+                )
+                reply_user_id_raw = reply_sender_dict.get("user_id", 0)
+                reply_user_id = int(reply_user_id_raw) if str(reply_user_id_raw).isdigit() else 0
+                fallback_segments, _, fallback_has_unknown = await _parse_segments(
+                    bot,
+                    message=_coerce_to_message(reply_message_obj),
+                    bot_id=bot_id,
+                    group_id=event.group_id,
+                    message_id=event_reply_id,
+                    mentioned_bot=False,
+                    detect_mention=False,
+                    depth=1,
+                    seen={event_reply_id},
+                )
+                nested_reply = MessageData(
+                    message_id=event_reply_id,
+                    created_at=float(getattr(event_reply, "time", 0)),
+                    sender_id=reply_user_id,
+                    sender_name=_sender_name_from_dict(reply_sender_dict, reply_user_id),
+                    mentioned_bot=False,
+                    segments=fallback_segments,
+                    has_unknown_segment=fallback_has_unknown,
+                )
+            prefixed_reply_segment = MessageSegmentData(
+                type="reply",
+                reply_message_id=event_reply_id,
+                reply=nested_reply,
+            )
+
+    parsed_segments, parsed_mentioned_bot, parsed_has_unknown = await _parse_segments(
+        bot,
+        message=message_for_parse,
+        bot_id=bot_id,
+        group_id=event.group_id,
+        message_id=event.message_id,
+        mentioned_bot=mentioned_bot,
+        detect_mention=True,
+        depth=0,
+        seen=set(),
+    )
+    if prefixed_reply_segment is not None and not any(
+        segment.type == "reply" for segment in parsed_segments
+    ):
+        parsed_segments.insert(0, prefixed_reply_segment)
+    return parsed_segments, parsed_mentioned_bot, parsed_has_unknown
+
+
+
