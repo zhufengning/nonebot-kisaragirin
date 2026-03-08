@@ -20,7 +20,7 @@ AT_TEXT_PATTERNS = (
     re.compile(r"\[CQ:at,qq=(\d+)\]"),
 )
 MAX_REPLY_DEPTH = 4
-_QQ_FACE_ID_TO_NAME: dict[str, str] | None = None
+_qq_face_id_to_name: dict[str, str] | None = None
 def _load_qq_face_map() -> dict[str, str]:
     path = Path(__file__).with_name("qq_faces.csv")
     mapping: dict[str, str] = {}
@@ -39,10 +39,10 @@ def _load_qq_face_map() -> dict[str, str]:
 
 
 def _qq_face_name(face_id: str) -> str:
-    global _QQ_FACE_ID_TO_NAME
-    if _QQ_FACE_ID_TO_NAME is None:
-        _QQ_FACE_ID_TO_NAME = _load_qq_face_map()
-    return _QQ_FACE_ID_TO_NAME.get(face_id, "")
+    global _qq_face_id_to_name
+    if _qq_face_id_to_name is None:
+        _qq_face_id_to_name = _load_qq_face_map()
+    return _qq_face_id_to_name.get(face_id, "")
 
 def _sender_name(event: GroupMessageEvent) -> str:
     sender = event.sender
@@ -544,9 +544,9 @@ async def _parse_message(
             if nested_reply is None:
                 reply_message_obj = getattr(event_reply, "message", Message())
                 reply_sender = getattr(event_reply, "sender", None)
-                reply_sender_dict = (
-                    reply_sender.model_dump() if hasattr(reply_sender, "model_dump") else {}
-                )
+                reply_sender_dict = {}
+                if reply_sender is not None and hasattr(reply_sender, "model_dump"):
+                    reply_sender_dict = reply_sender.model_dump()
                 reply_user_id_raw = reply_sender_dict.get("user_id", 0)
                 reply_user_id = int(reply_user_id_raw) if str(reply_user_id_raw).isdigit() else 0
                 fallback_segments, _, fallback_has_unknown = await _parse_segments(

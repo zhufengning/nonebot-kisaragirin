@@ -78,7 +78,7 @@ def build_agent_request(
 def _serialize_message(
     message: MessageData,
     *,
-    image_index: count,
+    image_index: count[int],
     images: list[ImageInput],
     image_hash_to_alias: dict[str, str],
 ) -> dict[str, object]:
@@ -193,7 +193,7 @@ def _image_sha256(image: ImageInput) -> str:
 def _get_or_create_image_alias(
     image: ImageInput,
     *,
-    image_index: count,
+    image_index: count[int],
     images: list[ImageInput],
     image_hash_to_alias: dict[str, str],
 ) -> str:

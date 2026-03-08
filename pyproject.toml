@@ -33,3 +33,10 @@ nonebot-adapter-telegram = [
 
 [tool.uv.sources]
 kisaragirin = { path = "kisaragirin", editable = true }
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.38.2",
+    "ruff>=0.15.5",
+    "ty>=0.0.21",
+]

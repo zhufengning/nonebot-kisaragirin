@@ -222,13 +222,16 @@ class KisaragiAgent:
         with conversation_lock:
             initial_state = self._build_initial_state(request)
             started_at = time.perf_counter()
-            route_selection_plan = build_route_selection_plan(initial_state["route_decision"])
+            route_decision = initial_state.get("route_decision")
+            if route_decision is None:
+                raise RuntimeError("missing route_decision in initial state")
+            route_selection_plan = build_route_selection_plan(route_decision)
             route_selection_graph = self._build_graph_for_execution_plan(
                 route_selection_plan
             )
             state_after_route = route_selection_graph.invoke(initial_state)
             execution_plan = self._resolve_execution_plan(
-                initial_state["route_decision"],
+                route_decision,
                 route_id=str(state_after_route.get("route_choice", "")),
                 include_prelude=False,
                 include_route_selector=False,
@@ -402,13 +405,17 @@ class KisaragiAgent:
             with conversation_lock:
                 state = self._build_initial_state(request)
                 started_at = time.perf_counter()
-                route_selection_plan = build_route_selection_plan(state["route_decision"])
+                route_decision = state.get("route_decision")
+                if route_decision is None:
+                    raise RuntimeError("missing route_decision in initial state")
+                route_selection_plan = build_route_selection_plan(route_decision)
                 route_selection_graph = self._build_graph_for_execution_plan(
                     route_selection_plan
                 )
                 state = route_selection_graph.invoke(state)
+                selected_route_decision = state.get("route_decision") or route_decision
                 execution_plan = self._resolve_execution_plan(
-                    state["route_decision"],
+                    selected_route_decision,
                     route_id=str(state.get("route_choice", "")),
                     include_prelude=False,
                     include_route_selector=False,

@@ -3,7 +3,7 @@
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Callable, cast
+from typing import Any, Callable, Hashable, cast
 
 from langgraph.graph import END, START, StateGraph
 
@@ -420,7 +420,11 @@ def build_graph_for_execution_plan(
             key: (END if value == END_TARGET else value)
             for key, value in branches.items()
         }
-        graph.add_conditional_edges(conditional_edge.source_node_id, _router, target_map)
+        graph.add_conditional_edges(
+            conditional_edge.source_node_id,
+            _router,
+            cast(dict[Hashable, str], target_map),
+        )
     for exit_node_id in execution_plan.graph_spec.exit_node_ids:
         if exit_node_id not in conditional_edges_by_source:
             graph.add_edge(exit_node_id, END)
