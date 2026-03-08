@@ -37,12 +37,12 @@
 
 ## P2：再拆 Agent 主流程
 
-8. 分离“流程编排”和“步骤实现”
+8. [x] 分离“流程编排”和“步骤实现”
    - 保留一个统一的步骤定义来源。
    - 避免 LangGraph 流程和 `reply-first` 手写流程各维护一套顺序。
    - 当前进展：已抽出 `kisaragirin/kisaragirin/orchestration.py`，把步骤元数据、步骤解析与图装配公共逻辑从 `agent.py` 中分离；`reply-first` 已开始复用统一的步骤解析与执行器，且返回点由步骤元数据 `emits_reply` 显式定义。
 
-9. 提取 step 处理模块
+9. [x] 提取 step 处理模块
    - 按职责拆出 URL、图片、工具、回复、记忆步骤。
    - 目标是让 `KisaragiAgent` 只负责装配依赖和组织流程。
    - 当前进展：已抽出 `kisaragirin/kisaragirin/steps_core.py`、`kisaragirin/kisaragirin/steps_enrichment.py` 与 `kisaragirin/kisaragirin/steps_response.py`，并让 `prepare`、`url`、`vision`、`enrich_merge`、`tools`、`reply`、`reply_lite`、`memory_gate`、`memory` 在步骤注册表中直接引用类外实现，去掉了 `agent.py` 中对应的中转薄封装。
@@ -110,12 +110,20 @@
     - 明确推荐启动方式、测试方式、调试方式。
     - 减少“README 写一套，实际代码跑另一套”的情况。
 
+23. 收敛静态类型护栏（`ty` + `basedpyright`）
+    - 当前进展：`ty check` 已清零；`basedpyright` 已补齐环境配置并清零 error，当前剩余 warning 需要分批治理。
+    - 优先把 warning 按类别分阶段处理，而不是在一次提交里全量扫完，避免改动过大。
+    - 第一批优先处理：`reportAny`、`reportExplicitAny`，先压低动态边界带来的不确定性。
+    - 第二批处理：`reportUnknownMemberType`、`reportUnknownArgumentType`、`reportUnknownVariableType`，把第三方库和动态对象的边界收口到适配层。
+    - 第三批处理：`reportUnusedCallResult`、`reportPrivateUsage`、`reportUnusedFunction`、`reportUnusedImport` 等工程噪音，保持检查结果可读。
+    - 需要坚持每轮同时跑：`ty check`、`.venv/Scripts/basedpyright.exe`，避免一种检查修好了、另一种又回退。
+
 ## 推荐执行顺序
 
 - 第一阶段：1 -> 2 -> 3 -> 4
 - 第二阶段：5 -> 6 -> 7
 - 第三阶段：8 -> 9 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16 -> 17 -> 18 -> 19
-- 第四阶段：20 -> 21 -> 22
+- 第四阶段：20 -> 21 -> 22 -> 23
 
 
 

@@ -34,6 +34,13 @@ nonebot-adapter-telegram = [
 [tool.uv.sources]
 kisaragirin = { path = "kisaragirin", editable = true }
 
+[tool.basedpyright]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.13"
+include = ["bot.py", "test.py", "zfnbot", "kisaragirin"]
+extraPaths = ["kisaragirin"]
+
 [dependency-groups]
 dev = [
     "basedpyright>=1.38.2",
