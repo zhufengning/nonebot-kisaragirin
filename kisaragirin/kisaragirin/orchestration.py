@@ -263,13 +263,13 @@ def _run_ready_batch(
     ordered_steps = [resolved_steps[node_id] for node_id in ready_node_ids]
     if len(ordered_steps) == 1:
         updates = [
-            wrap_step(ordered_steps[0].step_name, ordered_steps[0].handler)(state)
+            wrap_step(ordered_steps[0].node_name, ordered_steps[0].handler)(state)
         ]
         return _merge_parallel_updates(state, updates)
 
     with ThreadPoolExecutor(max_workers=len(ordered_steps)) as executor:
         futures = [
-            executor.submit(wrap_step(step.step_name, step.handler), state)
+            executor.submit(wrap_step(step.node_name, step.handler), state)
             for step in ordered_steps
         ]
         updates = [future.result() for future in futures]
@@ -400,7 +400,7 @@ def build_graph_for_execution_plan(
     for resolved_step in resolved_steps.values():
         graph.add_node(
             resolved_step.node_name,
-            wrap_step(resolved_step.step_name, resolved_step.handler),
+            wrap_step(resolved_step.node_name, resolved_step.handler),
         )
 
     for entry_node_id in execution_plan.graph_spec.entry_node_ids:

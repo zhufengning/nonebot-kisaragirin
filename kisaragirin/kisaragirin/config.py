@@ -26,6 +26,7 @@ class StepModelIds:
     reply: str
     memory: str
     route: str = ""
+    lite_reply: str = ""
 
 
 @dataclass(slots=True, frozen=True)

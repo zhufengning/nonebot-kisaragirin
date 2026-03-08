@@ -44,6 +44,7 @@ config = AgentConfig.from_model_list(
         tool="gpt4o",
         reply="gpt4o",
         memory="gpt4o",
+        lite_reply="gpt4o-mini",
     ),
     prompts=PromptConfig(persona="你是一个专业且可靠的助手。"),
     crawler=CrawlerConfig(
@@ -69,6 +70,11 @@ with KisaragiAgent(config) as agent:
 `ConversationResponse` 目前包含：
 
 - `reply`：最终回复
+
+## 轻量回复模型
+
+- `step_models.lite_reply` 用于 `lite_chat` 路径的回复模型。
+- 未配置 `lite_reply` 时，会自动回退到 `step_models.reply`，保持向后兼容。
 
 ## 调试日志
 

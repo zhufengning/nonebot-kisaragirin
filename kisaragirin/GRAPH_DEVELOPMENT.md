@@ -99,7 +99,7 @@ def run_step_memory_gate(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
 这里定义的是：
 
-- `step_name`：性能日志和调试日志使用的 step 名称
+- `step_name`：调试日志与 step 附件使用的内部名称
 - `default_node_name`：默认节点名
 - `emits_reply`：该节点是否是 reply-first 的返回点
 
@@ -220,7 +220,7 @@ ConditionalEdgeSpec(
 
 当前仓库里的 `route` 节点会使用 `step_models.route` 指定的轻量模型，在 `default` 与 `lite_chat` 路径间做判断。
 
-注意：`lite_chat` 路径虽然跳过工具调用，但回复节点仍统一使用 `step_models.reply`。
+注意：`lite_chat` 路径虽然跳过工具调用，但回复节点会优先使用 `step_models.lite_reply`；若未配置，则回退到 `step_models.reply`。
 
 ### 3.6 收尾闸门
 

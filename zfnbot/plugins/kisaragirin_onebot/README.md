@@ -10,7 +10,7 @@
 
 ## 主要配置项
 
-- `models` / `step_models`：模型与步骤映射
+- `models` / `step_models`：模型与步骤映射（其中 `step_models.lite_reply` 用于轻量回复路径，留空时回退到 `step_models.reply`）
 - `exa_api_key`：Exa API Key（启用 `exa_search`，并优先用于 `web_search`）
 - `brave_search_api_key`：Brave Search API Key（当 `exa_api_key` 为空时，回退用于 `web_search`）
 - `serpapi_api_key`：SerpApi Key（为空时不启用 `scholar_search` 工具）
@@ -34,7 +34,7 @@
 5. 群内静默达到 `idle_start_minutes` 后，每分钟按递增概率抽卡决定是否回复。
 6. 开始回复时会先取当前队列快照并出队；成功回复后不会清空后续新进队消息，失败时会把快照消息回灌队列。
 7. 共享前段中，URL 总结与图片描述会并行执行，再汇总进入路由与后续回复路径。
-8. 路由阶段会使用 `step_models.route` 指定的轻量模型判断走 `default` 还是 `lite_chat`：`default` 继续工具调用后回复，`lite_chat` 直接走轻量聊天路径，但回复仍使用 `step_models.reply`。
+8. 路由阶段会使用 `step_models.route` 指定的轻量模型判断走 `default` 还是 `lite_chat`：`default` 继续工具调用后回复，`lite_chat` 直接走轻量聊天路径，并优先使用 `step_models.lite_reply`；若未配置，则回退到 `step_models.reply`。
 9. step4 先发送回复；只有发送成功后，step5 才会实际写回记忆。step5 完成前该群保持 replying 状态。
 
 ## 输入给 Agent 的格式

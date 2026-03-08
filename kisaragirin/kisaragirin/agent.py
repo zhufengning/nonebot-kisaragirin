@@ -106,6 +106,7 @@ def _merge_float_dicts(
 
 class AgentState(TypedDict, total=False):
     conversation_id: str
+    run_started_at_monotonic: float
     user_message: str
     user_message_normalized: str
     images: list[ImageInput]
@@ -129,6 +130,7 @@ class AgentState(TypedDict, total=False):
     short_term_context: str
     working_text: str
     reply: str
+    reply_completed_ms: float
     step_attachments: Annotated[dict[str, str], _merge_str_dicts]
     step_durations_ms: Annotated[dict[str, float], _merge_float_dicts]
 
@@ -181,31 +183,6 @@ class _BackgroundAsyncRunner:
 
 
 class KisaragiAgent:
-    _PERF_STEP_ORDER = (
-        "STEP-0",
-        "STEP-1",
-        "STEP-2",
-        "STEP-2M",
-        "STEP-R",
-        "STEP-3",
-        "STEP-4",
-        "STEP-4L",
-        "STEP-5G",
-        "STEP-5",
-    )
-    _PERF_STEP_LABELS = {
-        "STEP-0": "prepare",
-        "STEP-1": "urls",
-        "STEP-2": "vision",
-        "STEP-2M": "enrich_merge",
-        "STEP-R": "route",
-        "STEP-3": "tools",
-        "STEP-4": "reply",
-        "STEP-4L": "reply_lite",
-        "STEP-5G": "memory_gate",
-        "STEP-5": "memory",
-    }
-
     def __init__(
         self, config: AgentConfig, tools: Sequence[BaseTool] | None = None
     ) -> None:
@@ -252,6 +229,7 @@ class KisaragiAgent:
             self._log_performance_report(
                 conversation_id=request.conversation_id,
                 step_durations_ms=result.get("step_durations_ms"),
+                reply_completed_ms=result.get("reply_completed_ms"),
                 total_ms=total_ms,
             )
 
@@ -268,6 +246,7 @@ class KisaragiAgent:
         execution_plan = self._resolve_execution_plan(route_decision)
         return {
             "conversation_id": request.conversation_id,
+            "run_started_at_monotonic": time.perf_counter(),
             "user_message": request.message,
             "images": list(request.images),
             "assistant_reply_sent": True,
@@ -408,6 +387,7 @@ class KisaragiAgent:
                 self._log_performance_report(
                     conversation_id=request.conversation_id,
                     step_durations_ms=state.get("step_durations_ms"),
+                    reply_completed_ms=state.get("reply_completed_ms"),
                     total_ms=total_ms,
                 )
         except Exception as exc:
@@ -477,7 +457,7 @@ class KisaragiAgent:
 
     def _with_step_timing(
         self,
-        step_name: str,
+        metric_name: str,
         step_fn: Any,
     ):
         def _wrapped(state: AgentState) -> AgentState:
@@ -496,10 +476,16 @@ class KisaragiAgent:
                             merged_step_durations[str(key)] = float(value)
                         except Exception:
                             continue
-            merged_step_durations[step_name] = elapsed_ms
+            merged_step_durations[metric_name] = elapsed_ms
 
             merged_result = dict(result)
             merged_result["step_durations_ms"] = merged_step_durations
+            if metric_name.startswith("reply") and "reply_completed_ms" not in merged_result:
+                run_started_at = state.get("run_started_at_monotonic")
+                if isinstance(run_started_at, (int, float)):
+                    merged_result["reply_completed_ms"] = (
+                        time.perf_counter() - float(run_started_at)
+                    ) * 1000
             return merged_result
 
         return _wrapped
@@ -657,23 +643,23 @@ class KisaragiAgent:
         *,
         conversation_id: str,
         step_durations_ms: dict[str, float] | None,
+        reply_completed_ms: float | None,
         total_ms: float,
     ) -> None:
         durations = step_durations_ms if isinstance(step_durations_ms, dict) else {}
         parts: list[str] = []
-        for step_name in self._PERF_STEP_ORDER:
-            step_label = self._PERF_STEP_LABELS.get(step_name, step_name.lower())
-            step_display_name = f"{step_name}({step_label})"
-            value = durations.get(step_name)
+        for step_name, value in durations.items():
             if isinstance(value, (int, float)):
-                parts.append(f"{step_display_name}={float(value):.2f}ms")
-            else:
-                parts.append(f"{step_display_name}=n/a")
+                parts.append(f"{step_name}={float(value):.2f}ms")
+        metrics: list[str] = []
+        if isinstance(reply_completed_ms, (int, float)):
+            metrics.append(f"reply_total={float(reply_completed_ms):.2f}ms")
+        metrics.append(f"total={total_ms:.2f}ms")
+        metrics.extend(parts)
         self._log_info(
-            "[PERF][conversation=%s] total=%.2fms %s",
+            "[PERF][conversation=%s] %s",
             conversation_id,
-            total_ms,
-            " ".join(parts),
+            " ".join(metrics),
         )
 
     def _log_info(self, fmt: str, *args: Any) -> None:

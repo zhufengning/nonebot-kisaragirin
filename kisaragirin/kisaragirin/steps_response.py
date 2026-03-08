@@ -7,7 +7,11 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from .prompts import MEMORY_JSON_INSTRUCTION
 
 
-def _reply_model(agent: Any):
+def _reply_model(agent: Any, *, lite: bool = False):
+    if lite:
+        lite_model_id = str(getattr(agent._config.step_models, "lite_reply", "") or "").strip()
+        if lite_model_id:
+            return agent._model(lite_model_id)
     return agent._model(agent._config.step_models.reply)
 
 
@@ -33,7 +37,20 @@ def run_step4_reply(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_step4_reply_lite(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
-    return _run_reply(agent, state, step_name="STEP-4L")
+    model = _reply_model(agent, lite=True)
+    reply_msg = model.invoke(
+        [
+            SystemMessage(content=agent._system_prompt("reply")),
+            HumanMessage(content=state["working_text"]),
+        ]
+    )
+    reply_text = agent._message_to_text(reply_msg.content)
+    attachment = "[STEP-4L-REPLY]\n" + reply_text
+    agent._log_step_debug(state, "STEP-4L", attachment)
+    return {
+        "reply": reply_text,
+        "step_attachments": agent._set_attachment(state, "STEP-4L", attachment),
+    }
 
 
 def run_step_memory_gate(agent: Any, state: dict[str, Any]) -> dict[str, Any]:

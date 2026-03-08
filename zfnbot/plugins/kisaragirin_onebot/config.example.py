@@ -46,6 +46,7 @@ PLUGIN_CONFIG = PluginConfig(
         vision="vision",
         tool="kimi",
         route="lite",
+        lite_reply="lite",
         reply="kimi",
         memory="kimi",
     ),

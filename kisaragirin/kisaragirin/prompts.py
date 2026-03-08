@@ -90,6 +90,6 @@ VISION_DESCRIPTION_PROMPT = "Describe this image in detail for downstream reason
 
 ROUTE_PROMPT = """你是一个路由器，只能输出一个标签：default 或 lite_chat。
 你需要阅读输入的消息。只有INPUT-YAML部分是输入的消息，其余部分是作为补充的上下文信息。在作出决策时，你应当只参考INPUT-YAML。
-如果消息主要是轻量闲聊、接梗、简短情绪回应，不需要工具和复杂推理，输出 lite_chat。
+如果消息主要是轻量闲聊、接梗、生活吐槽、技术吐槽（输出情绪而没有疑问）、搬运梗图、简短情绪回应，不需要工具和复杂推理，输出 lite_chat。
 如果消息包含事实判断、技术问题、需要工具或更重的分析，输出 default。
 只输出一个标签，不要解释。"""
