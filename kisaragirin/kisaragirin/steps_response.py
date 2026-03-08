@@ -15,7 +15,7 @@ def _reply_model(agent: Any, *, lite: bool = False):
     return agent._model(agent._config.step_models.reply)
 
 
-def _run_reply(agent: Any, state: dict[str, Any], *, step_name: str = "STEP-4") -> dict[str, Any]:
+def _run_reply(agent: Any, state: dict[str, Any], *, step_name: str = "reply") -> dict[str, Any]:
     model = _reply_model(agent)
     reply_msg = model.invoke(
         [
@@ -24,7 +24,7 @@ def _run_reply(agent: Any, state: dict[str, Any], *, step_name: str = "STEP-4") 
         ]
     )
     reply_text = agent._message_to_text(reply_msg.content)
-    attachment = f"[{step_name}-REPLY]\n" + reply_text
+    attachment = f"[{step_name.upper()}]\n" + reply_text
     agent._log_step_debug(state, step_name, attachment)
     return {
         "reply": reply_text,
@@ -32,11 +32,11 @@ def _run_reply(agent: Any, state: dict[str, Any], *, step_name: str = "STEP-4") 
     }
 
 
-def run_step4_reply(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
-    return _run_reply(agent, state, step_name="STEP-4")
+def run_reply(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+    return _run_reply(agent, state, step_name="reply")
 
 
-def run_step4_reply_lite(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+def run_reply_lite(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     model = _reply_model(agent, lite=True)
     reply_msg = model.invoke(
         [
@@ -45,41 +45,41 @@ def run_step4_reply_lite(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         ]
     )
     reply_text = agent._message_to_text(reply_msg.content)
-    attachment = "[STEP-4L-REPLY]\n" + reply_text
-    agent._log_step_debug(state, "STEP-4L", attachment)
+    attachment = "[REPLY_LITE]\n" + reply_text
+    agent._log_step_debug(state, "reply_lite", attachment)
     return {
         "reply": reply_text,
-        "step_attachments": agent._set_attachment(state, "STEP-4L", attachment),
+        "step_attachments": agent._set_attachment(state, "reply_lite", attachment),
     }
 
 
-def run_step_memory_gate(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+def run_memory_gate(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     should_update_memory = bool(state.get("assistant_reply_sent", True)) and bool(
         str(state.get("reply", "")).strip()
     ) and str(state.get("reply", "")).strip() != "bot选择沉默"
     memory_gate_result = "update" if should_update_memory else "skip"
     attachment = (
-        "[STEP-5G-MEMORY-GATE]\n"
+        "[MEMORY-GATE]\n"
         f"memory_gate_result={memory_gate_result}"
     )
-    agent._log_step_debug(state, "STEP-5G", attachment)
+    agent._log_step_debug(state, "memory_gate", attachment)
     return {
         "memory_gate_result": memory_gate_result,
-        "step_attachments": agent._set_attachment(state, "STEP-5G", attachment),
+        "step_attachments": agent._set_attachment(state, "memory_gate", attachment),
     }
 
 
-def run_step5_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     if str(state.get("memory_gate_result", "update")) != "update":
         attachment = (
-            "[STEP-5-MEMORY-UPDATE]\n"
+            "[MEMORY-UPDATE]\n"
             "long_term_memory_updated=false\n"
             "short_term_memory_appended=none\n"
             f"skipped_reason={state.get('memory_gate_result', 'skip')}"
         )
-        agent._log_step_debug(state, "STEP-5", attachment)
+        agent._log_step_debug(state, "memory", attachment)
         return {
-            "step_attachments": agent._set_attachment(state, "STEP-5", attachment),
+            "step_attachments": agent._set_attachment(state, "memory", attachment),
         }
 
     memory_model = agent._model(agent._config.step_models.memory)
@@ -140,17 +140,17 @@ def run_step5_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     )
 
     attachment = (
-        "[STEP-5-MEMORY-UPDATE]\n"
+        "[MEMORY-UPDATE]\n"
         "long_term_memory_updated=true\n"
         f"long_term_memory_compacted={'true' if memory_compacted else 'false'}\n"
         "short_term_memory_appended=user+assistant"
     )
     agent._log_step_debug(
         state,
-        "STEP-5",
+        "memory",
         attachment + f"\nupdated_long_term_memory:\n{new_long_term}",
     )
     return {
         "long_term_memory": new_long_term,
-        "step_attachments": agent._set_attachment(state, "STEP-5", attachment),
+        "step_attachments": agent._set_attachment(state, "memory", attachment),
     }

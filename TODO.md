@@ -45,14 +45,14 @@
 9. 提取 step 处理模块
    - 按职责拆出 URL、图片、工具、回复、记忆步骤。
    - 目标是让 `KisaragiAgent` 只负责装配依赖和组织流程。
-   - 当前进展：已抽出 `kisaragirin/kisaragirin/steps_core.py`、`kisaragirin/kisaragirin/steps_enrichment.py` 与 `kisaragirin/kisaragirin/steps_response.py`，并让 `step0`、`step1`、`step2`、`step3`、`step4`、`step5` 在步骤注册表中直接引用类外实现，去掉了 `agent.py` 中对应的中转薄封装。
+   - 当前进展：已抽出 `kisaragirin/kisaragirin/steps_core.py`、`kisaragirin/kisaragirin/steps_enrichment.py` 与 `kisaragirin/kisaragirin/steps_response.py`，并让 `prepare`、`url`、`vision`、`enrich_merge`、`tools`、`reply`、`reply_lite`、`memory_gate`、`memory` 在步骤注册表中直接引用类外实现，去掉了 `agent.py` 中对应的中转薄封装。
 
 10. 收敛并发模型
    - 重新审视线程、后台 event loop、conversation lock、插件侧 task/lock 的边界。
    - 优先减少重复并发控制点，避免未来出现偶发时序 bug。
 
 11. [x] 对齐“发送成功”与“短期记忆写入”语义
-   - 重新审视 `reply-first` 流程中 step4 发送回复与 step5 写短期记忆的时序关系。
+   - 重新审视 `reply-first` 流程中 `reply` / `reply_lite` 发送回复与 `memory` 写短期记忆的时序关系。
    - 目标是避免“群消息发送失败，但 assistant 回复已经写入短期记忆”的状态漂移。
    - 明确是否要改为：仅在回复成功发送后，才写入 assistant 短期记忆。
 
@@ -70,7 +70,7 @@
 14. [x] 为 route-specific 中段引入 step variant 机制
    - 先把差异最大的阶段做成 variant，例如 `tools.default` / `tools.tech`、`reply.default` / `reply.banter` / `reply.tech`。
    - 如果未来公共 phase 也出现差异，再为公共 phase 增加 variant，而不是复制整张图。
-   - 避免把 route 判断直接塞进 `_step3_*`、`_step4_*` 函数体内部。
+   - 避免把 route 判断直接塞进 `tools`、`reply` 相关函数体内部。
 
 15. [x] 让图装配器按 phase / variant 组图
    - 将 LangGraph 图从“固定线性图”改为“共享骨架 + route 分支”的装配方式。
@@ -99,7 +99,7 @@
 ## P3：最后补工程化护栏
 
 20. 为关键行为补自动化测试
-    - 至少覆盖：队列快照与失败回灌、reply-first 后 step5 收尾、记忆持久化、idle/mention 触发。
+    - 至少覆盖：队列快照与失败回灌、reply-first 后 `memory` 收尾、记忆持久化、idle/mention 触发。
     - 先补核心回归测试，再做较大重构。
 
 21. 给 prompt 驱动行为加代码边界

@@ -3,7 +3,7 @@
 from typing import Any
 
 
-def run_step0_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+def run_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     conversation_id = state["conversation_id"]
     normalized_message, url_aliases = agent._replace_urls_with_aliases(
         state["user_message"]
@@ -71,28 +71,28 @@ def run_step0_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     image_alias_text = agent._format_image_alias_text(all_image_aliases)
 
     working_text = (
-        "[STEP-0-LONG-TERM-MEMORY]\n"
+        "[LONG-TERM-MEMORY]\n"
         f"{long_term_memory or '(empty)'}\n\n"
-        "[STEP-0-FIXED-MEMORY]\n"
+        "[FIXED-MEMORY]\n"
         f"{agent._config.prompts.fixed_memory or '(empty)'}\n\n"
-        "[STEP-0-SHORT-TERM-CONTEXT]\n"
+        "[SHORT-TERM-CONTEXT]\n"
         f"{short_term_context}\n\n"
-        "[STEP-0-RESOURCE-ALIASES]\n"
+        "[RESOURCE-ALIASES]\n"
         f"urls: {url_alias_text}\n"
         f"images: {image_alias_text}\n\n"
-        "[STEP-0-ORIGINAL-INPUT]\n"
+        "[ORIGINAL-INPUT]\n"
         f"{normalized_message}"
     )
     attachment_text = (
-        "[STEP-0-LONG-TERM-MEMORY]\n"
+        "[LONG-TERM-MEMORY]\n"
         f"{long_term_memory or '(empty)'}\n\n"
-        "[STEP-0-SHORT-TERM-CONTEXT]\n"
+        "[SHORT-TERM-CONTEXT]\n"
         f"{short_term_context}\n\n"
-        "[STEP-0-RESOURCE-ALIASES]\n"
+        "[RESOURCE-ALIASES]\n"
         f"urls: {url_alias_text}\n"
         f"images: {image_alias_text}\n"
     )
-    agent._log_step_debug(state, "STEP-0", attachment_text)
+    agent._log_step_debug(state, "prepare", attachment_text)
 
     return {
         "user_message_normalized": normalized_message,
@@ -109,7 +109,7 @@ def run_step0_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         "working_text_base": working_text,
         "step_attachments": agent._set_attachment(
             state,
-            "STEP-0",
+            "prepare",
             attachment_text,
         ),
     }

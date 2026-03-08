@@ -8,17 +8,17 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from .config import ImageInput
 
 
-def run_step1_urls(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+def run_urls(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     url_aliases = state.get("url_aliases") or {}
     if not url_aliases:
-        appendix = "[STEP-1-URL-SUMMARIES]\n(no url detected)"
-        agent._log_step_debug(state, "STEP-1", appendix)
+        appendix = "[URL-SUMMARIES]\n(no url detected)"
+        agent._log_step_debug(state, "url", appendix)
         return {
             "url_appendix": appendix,
-            "step_attachments": agent._set_attachment(state, "STEP-1", appendix),
+            "step_attachments": agent._set_attachment(state, "url", appendix),
         }
 
-    blocks: list[str] = ["[STEP-1-URL-SUMMARIES]"]
+    blocks: list[str] = ["[URL-SUMMARIES]"]
     summary_by_url: dict[str, str] = {}
 
     for idx, (alias, url) in enumerate(url_aliases.items(), start=1):
@@ -37,26 +37,26 @@ def run_step1_urls(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         )
 
     appendix = "\n\n".join(blocks)
-    agent._log_step_debug(state, "STEP-1", appendix)
+    agent._log_step_debug(state, "url", appendix)
     return {
         "url_appendix": appendix,
-        "step_attachments": agent._set_attachment(state, "STEP-1", appendix),
+        "step_attachments": agent._set_attachment(state, "url", appendix),
     }
 
 
-def run_step2_vision(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+def run_vision(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     images = state.get("images") or []
     all_image_hashes = state.get("all_image_hashes") or []
     image_hash_to_alias = state.get("image_hash_to_alias") or {}
     if not images and not all_image_hashes:
         appendix = (
-            "[STEP-2-IMAGE-DESCRIPTIONS]\n(no image input)\n\n"
-            "[STEP-2-INPUT-YAML]\n" + str(state.get("user_message", ""))
+            "[IMAGE-DESCRIPTIONS]\n(no image input)\n\n"
+            "[INPUT-YAML]\n" + str(state.get("user_message", ""))
         )
-        agent._log_step_debug(state, "STEP-2", appendix)
+        agent._log_step_debug(state, "vision", appendix)
         return {
             "vision_appendix": appendix,
-            "step_attachments": agent._set_attachment(state, "STEP-2", appendix),
+            "step_attachments": agent._set_attachment(state, "vision", appendix),
         }
 
     image_aliases = state.get("image_aliases") or []
@@ -81,7 +81,7 @@ def run_step2_vision(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         )
         description_by_hash[normalized_hash] = description
 
-    blocks: list[str] = ["[STEP-2-IMAGE-DESCRIPTIONS]"]
+    blocks: list[str] = ["[IMAGE-DESCRIPTIONS]"]
     item_index = 1
     for image_hash in all_image_hashes:
         normalized_hash = str(image_hash).strip().lower()
@@ -103,18 +103,18 @@ def run_step2_vision(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         blocks.append(f"{item_index}. {alias}\n{description}")
         item_index += 1
 
-    blocks.append("[STEP-2-INPUT-YAML]")
+    blocks.append("[INPUT-YAML]")
     blocks.append(str(state.get("user_message", "")))
 
     appendix = "\n\n".join(blocks)
-    agent._log_step_debug(state, "STEP-2", appendix)
+    agent._log_step_debug(state, "vision", appendix)
     return {
         "vision_appendix": appendix,
-        "step_attachments": agent._set_attachment(state, "STEP-2", appendix),
+        "step_attachments": agent._set_attachment(state, "vision", appendix),
     }
 
 
-def run_step_enrich_merge(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+def run_enrich_merge(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     base = str(state.get("working_text_base", state.get("working_text", "")))
     url_appendix = str(state.get("url_appendix", "") or "").strip()
     vision_appendix = str(state.get("vision_appendix", "") or "").strip()
@@ -124,22 +124,22 @@ def run_step_enrich_merge(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     if vision_appendix:
         parts.append(vision_appendix)
     working_text = "\n\n".join(part for part in parts if part)
-    attachment = "[STEP-2M-ENRICH-MERGE]\nmerged=url+vision"
-    agent._log_step_debug(state, "STEP-2M", attachment)
+    attachment = "[ENRICH-MERGE]\nmerged=url+vision"
+    agent._log_step_debug(state, "enrich_merge", attachment)
     return {
         "working_text": working_text,
-        "step_attachments": agent._set_attachment(state, "STEP-2M", attachment),
+        "step_attachments": agent._set_attachment(state, "enrich_merge", attachment),
     }
 
 
-def run_step3_tools(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+def run_tools(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     tool_model = agent._model(agent._config.step_models.tool).bind_tools(agent._tools)
     messages: list[Any] = [
         SystemMessage(content=agent._system_prompt("tool")),
         HumanMessage(content=state["working_text"]),
     ]
 
-    logs: list[str] = ["[STEP-3-TOOL-EXTRA-INFO]"]
+    logs: list[str] = ["[TOOL-EXTRA-INFO]"]
     used_tool = False
 
     for round_idx in range(1, agent._config.max_tool_rounds + 1):
@@ -186,8 +186,8 @@ def run_step3_tools(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         logs.append("No tool was called.")
 
     appendix = "\n\n".join(logs)
-    agent._log_step_debug(state, "STEP-3", appendix)
+    agent._log_step_debug(state, "tools", appendix)
     return {
         "working_text": state["working_text"] + "\n\n" + appendix,
-        "step_attachments": agent._set_attachment(state, "STEP-3", appendix),
+        "step_attachments": agent._set_attachment(state, "tools", appendix),
     }

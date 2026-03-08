@@ -42,14 +42,14 @@
 示例：
 
 ```python
-def run_step_memory_gate(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+def run_memory_gate(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     should_update_memory = bool(state.get("assistant_reply_sent", True))
     result = "update" if should_update_memory else "skip"
     return {
         "memory_gate_result": result,
         "step_attachments": agent._set_attachment(
             state,
-            "STEP-5G",
+            "memory_gate",
             f"memory_gate_result={result}",
         ),
     }
@@ -69,7 +69,7 @@ def run_step_memory_gate(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
 ```python
 "memory_gate": {
-    "default": lambda state: run_step_memory_gate(self, state),
+    "default": lambda state: run_memory_gate(self, state),
 },
 ```
 
@@ -82,8 +82,8 @@ def run_step_memory_gate(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
 ```python
 "reply": {
-    "default": lambda state: run_step4_reply(self, state),
-    "lite": lambda state: run_step4_reply_lite(self, state),
+    "default": lambda state: run_reply(self, state),
+    "lite": lambda state: run_reply_lite(self, state),
 },
 ```
 
@@ -93,7 +93,7 @@ def run_step_memory_gate(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
 ```python
 "memory_gate": {
-    "default": StepMetadata("STEP-5G", "memory_gate"),
+    "default": StepMetadata("memory_gate", "memory_gate"),
 },
 ```
 
@@ -185,40 +185,28 @@ GraphSpec(
 
 ### 3.4 条件分支
 
-当前项目使用的是更偏 Dify 风格的条件边：
+当前项目仍支持声明式条件边，但主要用于图内 gate，例如 `memory_gate -> memory / END`。
 
-- 节点负责算出条件结果
-- 图规格负责定义不同结果通向哪里
+对于 `route`，当前实现不再把 `default` 和 `lite_chat` 两条路径写在同一张图里，而是拆成三段：
 
-例如 route 图：
-
-```python
-ConditionalEdgeSpec(
-    source_node_id="route",
-    condition_key="route_choice",
-    branches={
-        "default": "tools",
-        "lite_chat": "reply_lite",
-    },
-    default_target_node_id="tools",
-)
-```
+- `shared_prelude_graph`：共享前段（prepare/url/vision/enrich_merge）
+- `route_selector_graph`：只负责执行 `route` 节点并写出 `route_choice`
+- `route_graph`：根据 `route_choice` 选择一张独立路径图，例如 `default_route_graph` 或 `lite_chat_route_graph`
 
 也就是说：
 
 - `route` 节点只负责在 state 里写 `route_choice`
-- 图外部再决定：
-  - `default -> tools`
-  - `lite_chat -> reply_lite`
+- Agent 运行时会先跑共享前段和选路图，再装配对应的独立路径图继续执行
 
 这种方式的优点是：
 
-- 节点实现不需要知道外部图有哪些节点
-- 改图结构时，不必改节点内部逻辑
+- 每条路由路径都是独立图，结构更清晰
+- 路径内节点不会混在同一张图里
+- 改某条路径结构时，不必维护另一条路径的条件边
 
 ### 3.5 路由节点
 
-当前仓库里的 `route` 节点会使用 `step_models.route` 指定的轻量模型，在 `default` 与 `lite_chat` 路径间做判断。
+当前仓库里的 `route` 节点会使用 `step_models.route` 指定的轻量模型，在 `default` 与 `lite_chat` 路径间做判断；判断完成后，Agent 会装配对应的独立路径图继续执行。
 
 注意：`lite_chat` 路径虽然跳过工具调用，但回复节点会优先使用 `step_models.lite_reply`；若未配置，则回退到 `step_models.reply`。
 
@@ -240,8 +228,8 @@ ConditionalEdgeSpec(
 当前 reply-first 不是单独维护一套步骤顺序，而是复用 `ExecutionPlan` 和 `GraphSpec`：
 
 - 先按图规格解析出节点
-- 找到第一个 `emits_reply=True` 的节点作为对外返回点
-- 返回后，图继续跑 finalize 部分
+- 找到第一个 `emits_reply=True` 的节点（例如 `reply` 或 `reply_lite`）作为对外返回点
+- 返回后，图继续跑 finalize 部分（例如 `memory_gate`、`memory`）
 
 因此如果你加了新的 reply 节点，需要确认：
 
@@ -259,7 +247,7 @@ ConditionalEdgeSpec(
 新建或放入合适文件，例如 `steps_planner.py`：
 
 ```python
-def run_step_planner(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+def run_planner(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     ...
 ```
 
@@ -267,7 +255,7 @@ def run_step_planner(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
 ```python
 "planner": {
-    "default": lambda state: run_step_planner(self, state),
+    "default": lambda state: run_planner(self, state),
 },
 ```
 
@@ -275,7 +263,7 @@ def run_step_planner(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
 ```python
 "planner": {
-    "default": StepMetadata("STEP-P", "planner"),
+    "default": StepMetadata("planner", "planner"),
 },
 ```
 

@@ -2,6 +2,8 @@
 
 请在做出任何修改后检查是否需要更新README, AGENTS.md以及其他文档。
 
+请在修改代码后使用ty check检查并修复报错。
+
 ## 目录索引
 
 - `README.md`：项目入口说明、启动方式与文档导航。
@@ -28,12 +30,12 @@
 - `zfnbot/plugins/kisaragirin_onebot/payload.py`：将消息序列化为 YAML，并构造 `ConversationRequest`。
 - `zfnbot/plugins/kisaragirin_onebot/config_schema.py`：插件配置结构定义。
 - `zfnbot/plugins/kisaragirin_onebot/config.py`：插件实际运行配置。
-- `kisaragirin/kisaragirin/agent.py`：Agent 主流程（step0~step5）与图装配入口。
+- `kisaragirin/kisaragirin/agent.py`：Agent 主流程与图装配入口。
 - `kisaragirin/kisaragirin/routing.py`：RouteDecision、ExecutionPlan、GraphSpec、ConditionalEdgeSpec 等路由与图规格骨架。
 - `kisaragirin/kisaragirin/orchestration.py`：步骤元数据、步骤解析与图装配公共逻辑。
-- `kisaragirin/kisaragirin/steps_core.py`：已抽离的核心 step 实现（当前包含 `step0`、`step1`）。
-- `kisaragirin/kisaragirin/steps_response.py`：已抽离的回复与记忆 step 实现（当前包含 `step4`、`step5`）。
-- `kisaragirin/kisaragirin/steps_enrichment.py`：已抽离的增强型 step 实现（当前包含 `step1`、`step2`、`step2M`、`step3`）。
+- `kisaragirin/kisaragirin/steps_core.py`：已抽离的核心节点实现（当前包含 `prepare`）。
+- `kisaragirin/kisaragirin/steps_response.py`：已抽离的回复与记忆节点实现（当前包含 `reply`、`reply_lite`、`memory_gate`、`memory`）。
+- `kisaragirin/kisaragirin/steps_enrichment.py`：已抽离的增强型节点实现（当前包含 `url`、`vision`、`enrich_merge`、`tools`）。
 - `kisaragirin/kisaragirin/steps_routing.py`：路由 step 实现（当前包含 `route`）。
 - `kisaragirin/kisaragirin/tools.py`：内置工具（`read_url`、可选 `exa_search`、可选 `web_search`〔优先 Exa，回退 Brave〕、可选 `scholar_search`）。
 - `kisaragirin/kisaragirin/memory.py`：SQLite 记忆与缓存存储。
@@ -53,21 +55,24 @@
 - 回复执行逻辑：
   - 开始回复时先将当前队列快照并出队（后续新消息不影响本轮）。
   - 共享前段中，URL 总结与图片描述会并行执行，再汇总进入路由。
-- 路由阶段使用 `step_models.route` 指定的轻量模型在 `default` 与 `lite_chat` 路径间做判断；lite 路径跳过工具调用，但回复仍使用 `step_models.reply`。
-- step4 产出回复文本后会先发送到群里；只有发送成功后，step5 才会实际写回记忆。
-  - 在 step5 完成前，当前群仍保持 replying 状态，下一次回复触发会继续等待/跳过。
+- 路由阶段使用 `step_models.route` 指定的轻量模型在 `default` 与 `lite_chat` 路径间做判断；选路完成后会装配对应的独立路径图。`lite_chat` 路径跳过工具调用，并优先使用 `step_models.lite_reply`；若未配置则回退到 `step_models.reply`。
+- `reply` / `reply_lite` 产出回复文本后会先发送到群里；只有发送成功后，`memory` 才会实际写回记忆。
+  - 在 `memory` 完成前，当前群仍保持 replying 状态，下一次回复触发会继续等待/跳过。
   - 若回复失败，会把快照消息回灌队列，避免丢消息。
   - 若回复成功，不再“全量清空队列”；新进队的消息继续等待下一轮触发。
   - 若当前已有回复在执行：`@` 触发会等待，非 `@` 触发会跳过。
 
 ## Agent 流程（kisaragirin）
 
-- step0：组合长期记忆、短期记忆、固定记忆与当前输入。
-- step1：提取 URL，抓取文本并总结；URL 总结会缓存。
-- step2：处理图片并生成描述；图片描述按 sha256 缓存。
-- step3：按需调用工具补充信息。
-- step4：生成最终回复文本。
-- step5：写回长期记忆与短期记忆（user+assistant）。
+- `prepare`：组合长期记忆、短期记忆、固定记忆与当前输入。
+- `url`：提取 URL，抓取文本并总结；URL 总结会缓存。
+- `vision`：处理图片并生成描述；图片描述按 sha256 缓存。
+- `enrich_merge`：汇总 `url` 与 `vision` 的补充内容，拼回工作上下文。
+- `route`：判断进入 `default` 还是 `lite_chat` 路径。
+- `tools`：按需调用工具补充信息（仅 `default` 路径）。
+- `reply` / `reply_lite`：生成最终回复文本。
+- `memory_gate`：根据回复发送结果决定是否进入记忆写回。
+- `memory`：写回长期记忆与短期记忆（user+assistant）。
 
 ## 数据与缓存
 

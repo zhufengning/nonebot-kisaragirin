@@ -29,20 +29,20 @@ from .prompts import (
     URL_SUMMARY_PROMPT_TEMPLATE,
     VISION_DESCRIPTION_PROMPT,
 )
-from .steps_core import run_step0_prepare
+from .steps_core import run_prepare
 from .steps_enrichment import (
-    run_step1_urls,
-    run_step2_vision,
-    run_step3_tools,
-    run_step_enrich_merge,
+    run_enrich_merge,
+    run_tools,
+    run_urls,
+    run_vision,
 )
 from .steps_response import (
-    run_step4_reply,
-    run_step4_reply_lite,
-    run_step5_memory,
-    run_step_memory_gate,
+    run_memory,
+    run_memory_gate,
+    run_reply,
+    run_reply_lite,
 )
-from .steps_routing import run_step_route
+from .steps_routing import run_route
 from .orchestration import (
     build_graph_for_execution_plan,
     execute_graph_until_reply_and_finalize,
@@ -52,7 +52,9 @@ from .routing import (
     ExecutionPlan,
     RouteDecision,
     build_default_route_decision,
+    build_route_selection_plan,
     build_execution_plan,
+    normalize_route_id,
 )
 from .tools import build_default_tools
 
@@ -214,17 +216,33 @@ class KisaragiAgent:
             )
         )
         self._tool_map = {tool.name: tool for tool in self._tools}
-        self._default_execution_plan = self._resolve_execution_plan(
-            build_default_route_decision()
-        )
-        self._graph = self._build_graph()
 
     def run(self, request: ConversationRequest) -> ConversationResponse:
         conversation_lock = self._get_conversation_lock(request.conversation_id)
         with conversation_lock:
             initial_state = self._build_initial_state(request)
             started_at = time.perf_counter()
-            result = self._graph.invoke(initial_state)
+            route_selection_plan = build_route_selection_plan(initial_state["route_decision"])
+            route_selection_graph = self._build_graph_for_execution_plan(
+                route_selection_plan
+            )
+            state_after_route = route_selection_graph.invoke(initial_state)
+            execution_plan = self._resolve_execution_plan(
+                initial_state["route_decision"],
+                route_id=str(state_after_route.get("route_choice", "")),
+                include_prelude=False,
+                include_route_selector=False,
+            )
+            execution_graph = self._build_graph_for_execution_plan(execution_plan)
+            result = execution_graph.invoke(
+                {
+                    **state_after_route,
+                    "route_choice": normalize_route_id(
+                        str(state_after_route.get("route_choice", ""))
+                    ),
+                    "execution_plan": execution_plan,
+                }
+            )
             total_ms = (time.perf_counter() - started_at) * 1000
             self._log_performance_report(
                 conversation_id=request.conversation_id,
@@ -243,7 +261,7 @@ class KisaragiAgent:
 
     def _build_initial_state(self, request: ConversationRequest) -> AgentState:
         route_decision = self._resolve_route_decision(request)
-        execution_plan = self._resolve_execution_plan(route_decision)
+        execution_plan = build_route_selection_plan(route_decision)
         return {
             "conversation_id": request.conversation_id,
             "run_started_at_monotonic": time.perf_counter(),
@@ -264,8 +282,22 @@ class KisaragiAgent:
     def _resolve_route_decision(self, request: ConversationRequest) -> RouteDecision:
         return build_default_route_decision()
 
-    def _resolve_execution_plan(self, route_decision: RouteDecision) -> ExecutionPlan:
-        return build_execution_plan(route_decision)
+    def _resolve_execution_plan(
+        self,
+        route_decision: RouteDecision,
+        route_id: str | None = None,
+        *,
+        include_prelude: bool = True,
+        include_route_selector: bool = True,
+        include_finalize: bool = True,
+    ) -> ExecutionPlan:
+        return build_execution_plan(
+            route_decision,
+            route_id=route_id,
+            include_prelude=include_prelude,
+            include_route_selector=include_route_selector,
+            include_finalize=include_finalize,
+        )
 
     def _execution_steps(
         self, execution_plan: ExecutionPlan
@@ -281,32 +313,32 @@ class KisaragiAgent:
     def _step_implementations(self) -> StepImplementationRegistry:
         return {
             "prepare": {
-                "default": lambda state: run_step0_prepare(self, state),
+                "default": lambda state: run_prepare(self, state),
             },
             "url": {
-                "default": lambda state: run_step1_urls(self, state),
+                "default": lambda state: run_urls(self, state),
             },
             "vision": {
-                "default": lambda state: run_step2_vision(self, state),
+                "default": lambda state: run_vision(self, state),
             },
             "enrich_merge": {
-                "default": lambda state: run_step_enrich_merge(self, state),
+                "default": lambda state: run_enrich_merge(self, state),
             },
             "route": {
-                "default": lambda state: run_step_route(self, state),
+                "default": lambda state: run_route(self, state),
             },
             "tools": {
-                "default": lambda state: run_step3_tools(self, state),
+                "default": lambda state: run_tools(self, state),
             },
             "reply": {
-                "default": lambda state: run_step4_reply(self, state),
-                "lite": lambda state: run_step4_reply_lite(self, state),
+                "default": lambda state: run_reply(self, state),
+                "lite": lambda state: run_reply_lite(self, state),
             },
             "memory_gate": {
-                "default": lambda state: run_step_memory_gate(self, state),
+                "default": lambda state: run_memory_gate(self, state),
             },
             "memory": {
-                "default": lambda state: run_step5_memory(self, state),
+                "default": lambda state: run_memory(self, state),
             },
         }
 
@@ -370,7 +402,24 @@ class KisaragiAgent:
             with conversation_lock:
                 state = self._build_initial_state(request)
                 started_at = time.perf_counter()
-                execution_plan = state["execution_plan"]
+                route_selection_plan = build_route_selection_plan(state["route_decision"])
+                route_selection_graph = self._build_graph_for_execution_plan(
+                    route_selection_plan
+                )
+                state = route_selection_graph.invoke(state)
+                execution_plan = self._resolve_execution_plan(
+                    state["route_decision"],
+                    route_id=str(state.get("route_choice", "")),
+                    include_prelude=False,
+                    include_route_selector=False,
+                )
+                state = {
+                    **state,
+                    "route_choice": normalize_route_id(
+                        str(state.get("route_choice", ""))
+                    ),
+                    "execution_plan": execution_plan,
+                }
                 state = execute_graph_until_reply_and_finalize(
                     initial_state=state,
                     execution_plan=execution_plan,
@@ -451,9 +500,6 @@ class KisaragiAgent:
         if missing:
             raise ValueError(f"Missing model config ids: {missing}")
         return models
-
-    def _build_graph(self):
-        return self._build_graph_for_execution_plan(self._default_execution_plan)
 
     def _with_step_timing(
         self,
@@ -780,7 +826,7 @@ class KisaragiAgent:
         instruction = STEP_SYSTEM_INSTRUCTIONS.get(step, "")
         if instruction:
             sections.append(
-                f"---\nThis is a scenario task evaluation project used to test the capabilities of LLM. After reading the task file, complete the corresponding tasks according to the instructions within, and output the final results.\n---TASK FILE CONTENT---\n\n[STEP-INSTRUCTION:{step}]\n{instruction}"
+                f"---\nThis is a scenario task evaluation project used to test the capabilities of LLM. After reading the task file, complete the corresponding tasks according to the instructions within, and output the final results.\n---TASK FILE CONTENT---\n\n[INSTRUCTION:{step}]\n{instruction}"
             )
         if self._config.prompts.persona.strip():
             sections.append(

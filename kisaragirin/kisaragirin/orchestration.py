@@ -22,32 +22,32 @@ class StepMetadata:
 
 DEFAULT_STEP_METADATA: dict[str, dict[str, StepMetadata]] = {
     "prepare": {
-        "default": StepMetadata("STEP-0", "prepare"),
+        "default": StepMetadata("prepare", "prepare"),
     },
     "url": {
-        "default": StepMetadata("STEP-1", "url"),
+        "default": StepMetadata("url", "url"),
     },
     "vision": {
-        "default": StepMetadata("STEP-2", "vision"),
+        "default": StepMetadata("vision", "vision"),
     },
     "enrich_merge": {
-        "default": StepMetadata("STEP-2M", "enrich_merge"),
+        "default": StepMetadata("enrich_merge", "enrich_merge"),
     },
     "route": {
-        "default": StepMetadata("STEP-R", "route"),
+        "default": StepMetadata("route", "route"),
     },
     "tools": {
-        "default": StepMetadata("STEP-3", "tools"),
+        "default": StepMetadata("tools", "tools"),
     },
     "reply": {
-        "default": StepMetadata("STEP-4", "reply", emits_reply=True),
-        "lite": StepMetadata("STEP-4L", "reply_lite", emits_reply=True),
+        "default": StepMetadata("reply", "reply", emits_reply=True),
+        "lite": StepMetadata("reply_lite", "reply_lite", emits_reply=True),
     },
     "memory_gate": {
-        "default": StepMetadata("STEP-5G", "memory_gate"),
+        "default": StepMetadata("memory_gate", "memory_gate"),
     },
     "memory": {
-        "default": StepMetadata("STEP-5", "memory"),
+        "default": StepMetadata("memory", "memory"),
     },
 }
 
