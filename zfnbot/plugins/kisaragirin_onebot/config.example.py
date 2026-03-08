@@ -2,7 +2,11 @@
 
 from kisaragirin import CrawlerConfig, ModelConfig, StepModelIds
 
-from .config_schema import GroupConfig, PluginConfig, ReplyTimingConfig
+from zfnbot.plugins.kisaragirin_onebot.config_schema import (
+    GroupConfig,
+    PluginConfig,
+    ReplyTimingConfig,
+)
 
 
 PLUGIN_CONFIG = PluginConfig(

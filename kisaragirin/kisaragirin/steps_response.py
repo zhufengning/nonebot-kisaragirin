@@ -40,7 +40,7 @@ def run_reply_lite(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     model = _reply_model(agent, lite=True)
     reply_msg = model.invoke(
         [
-            SystemMessage(content=agent._system_prompt("reply")),
+            SystemMessage(content=agent._system_prompt("reply_lite")),
             HumanMessage(content=state["working_text"]),
         ]
     )

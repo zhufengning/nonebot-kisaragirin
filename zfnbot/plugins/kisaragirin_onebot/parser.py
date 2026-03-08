@@ -155,7 +155,7 @@ async def _image_segment_to_data(bot: Bot, segment: MessageSegment) -> MessageSe
     )
 
 
-def _normalize_message_id(raw_message_id: Any) -> int | str | None:
+def _normalize_message_id(raw_message_id: Any) -> int | None:
     if raw_message_id is None:
         return None
     if isinstance(raw_message_id, int):
@@ -163,7 +163,7 @@ def _normalize_message_id(raw_message_id: Any) -> int | str | None:
     text = str(raw_message_id).strip()
     if not text:
         return None
-    return int(text) if text.isdigit() else text
+    return int(text) if text.isdigit() else None
 
 
 def _coerce_to_message(raw_message: Any) -> Message:

@@ -3,7 +3,7 @@
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from langgraph.graph import END, START, StateGraph
 
@@ -400,7 +400,7 @@ def build_graph_for_execution_plan(
     for resolved_step in resolved_steps.values():
         graph.add_node(
             resolved_step.node_name,
-            wrap_step(resolved_step.node_name, resolved_step.handler),
+            cast(Any, wrap_step(resolved_step.node_name, resolved_step.handler)),
         )
 
     for entry_node_id in execution_plan.graph_spec.entry_node_ids:

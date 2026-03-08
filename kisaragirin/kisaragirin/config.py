@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping, Sequence
+from typing import Mapping, Self, Sequence, TypedDict, Unpack
 
 
 @dataclass(slots=True, frozen=True)
@@ -79,8 +79,8 @@ class AgentConfig:
         models: Sequence[ModelConfig],
         step_models: StepModelIds,
         prompts: PromptConfig | None = None,
-        **kwargs: object,
-    ) -> "AgentConfig":
+        **kwargs: Unpack[AgentConfigKwargs],
+    ) -> Self:
         model_map = {m.id: m for m in models}
         return cls(
             models=model_map,
@@ -88,6 +88,19 @@ class AgentConfig:
             prompts=prompts or PromptConfig(),
             **kwargs,
         )
+
+
+class AgentConfigKwargs(TypedDict, total=False):
+    exa_api_key: str
+    brave_search_api_key: str
+    serpapi_api_key: str
+    crawler: CrawlerConfig
+    memory_db_path: str
+    short_term_turn_window: int
+    max_tool_rounds: int
+    max_crawl_chars: int
+    max_summary_chars: int
+    max_tool_output_chars: int
 
 
 @dataclass(slots=True)

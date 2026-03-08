@@ -18,7 +18,7 @@ def build_default_tools(
     def read_url(url: str, max_chars: int = 4000) -> str:
         """Read and extract text from one URL."""
 
-        return fetch_url_content(url=url, max_chars=max_chars)
+        return fetch_url_content(url, max_chars)
 
     tools: list[BaseTool] = []
     exa_key = exa_api_key.strip()

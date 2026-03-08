@@ -75,6 +75,7 @@ with KisaragiAgent(config) as agent:
 
 - `step_models.lite_reply` 用于 `lite_chat` 路径的回复模型。
 - 未配置 `lite_reply` 时，会自动回退到 `step_models.reply`，保持向后兼容。
+- `reply` 与 `reply_lite` 现在分别使用各自的系统提示词；当前 `reply_lite` 先复制了一份与 `reply` 相同的提示词，后续可独立调整。
 
 ## 调试日志
 

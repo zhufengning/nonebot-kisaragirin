@@ -20,10 +20,11 @@ def _build_request(group_id: int, queue: list[QueuedMessage]):
     )
 
 
-def _mention_reference_id(queue: list[QueuedMessage]) -> int | str | None:
+def _mention_reference_id(queue: list[QueuedMessage]) -> int | None:
     for item in reversed(queue):
         if item.mentioned_bot:
-            return item.message_id
+            message_id = item.message_id
+            return message_id if isinstance(message_id, int) else None
     return None
 
 

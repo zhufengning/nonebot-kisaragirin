@@ -506,7 +506,7 @@ class KisaragiAgent:
         metric_name: str,
         step_fn: Any,
     ):
-        def _wrapped(state: AgentState) -> AgentState:
+        def _wrapped(state: AgentState) -> dict[str, Any]:
             started_at = time.perf_counter()
             result = step_fn(state)
             elapsed_ms = (time.perf_counter() - started_at) * 1000
