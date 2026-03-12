@@ -50,6 +50,10 @@
 10. 收敛并发模型
    - 重新审视线程、后台 event loop、conversation lock、插件侧 task/lock 的边界。
    - 优先减少重复并发控制点，避免未来出现偶发时序 bug。
+   - [x] 给插件侧回复轮次引入 run token，统一旧 run 失效判断。
+   - [x] 对齐 `/clear` 与运行中回复的失效语义，避免旧 run 在 clear 后继续发送或回灌队列。
+   - [x] 收敛插件侧 worker 生命周期，减少“每次新消息都 cancel + recreate task”的控制点。
+   - [x] 重写 Agent `reply-first` 的线程/事件循环握手，去掉裸线程阻塞等待发送结果的模式。
 
 11. [x] 对齐“发送成功”与“短期记忆写入”语义
    - 重新审视 `reply-first` 流程中 `reply` / `reply_lite` 发送回复与 `memory` 写短期记忆的时序关系。
@@ -110,36 +114,9 @@
     - 明确推荐启动方式、测试方式、调试方式。
     - 减少“README 写一套，实际代码跑另一套”的情况。
 
-23. 收敛静态类型护栏（`ty` + `basedpyright`）
-    - 当前进展：`ty check` 已清零；`basedpyright` 已补齐环境配置并清零 error，当前剩余 warning 需要分批治理。
-    - 优先把 warning 按类别分阶段处理，而不是在一次提交里全量扫完，避免改动过大。
-    - 第一批优先处理：`reportAny`、`reportExplicitAny`，先压低动态边界带来的不确定性。
-    - 第二批处理：`reportUnknownMemberType`、`reportUnknownArgumentType`、`reportUnknownVariableType`，把第三方库和动态对象的边界收口到适配层。
-    - 第三批处理：`reportUnusedCallResult`、`reportPrivateUsage`、`reportUnusedFunction`、`reportUnusedImport` 等工程噪音，保持检查结果可读。
-    - 需要坚持每轮同时跑：`ty check`、`.venv/Scripts/basedpyright.exe`，避免一种检查修好了、另一种又回退。
-
 ## 推荐执行顺序
 
 - 第一阶段：1 -> 2 -> 3 -> 4
 - 第二阶段：5 -> 6 -> 7
 - 第三阶段：8 -> 9 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16 -> 17 -> 18 -> 19
 - 第四阶段：20 -> 21 -> 22 -> 23
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

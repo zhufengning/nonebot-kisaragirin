@@ -2,7 +2,7 @@
 
 import asyncio
 import base64
-from concurrent.futures import Future as ThreadFuture
+from dataclasses import dataclass
 import hashlib
 import json
 import logging
@@ -45,10 +45,10 @@ from .steps_response import (
 from .steps_routing import run_route
 from .orchestration import (
     build_graph_for_execution_plan,
-    execute_graph_until_reply_and_finalize,
     resolve_all_steps,
 )
 from .routing import (
+    EMPTY_GRAPH,
     ExecutionPlan,
     RouteDecision,
     build_default_route_decision,
@@ -135,6 +135,13 @@ class AgentState(TypedDict, total=False):
     reply_completed_ms: float
     step_attachments: Annotated[dict[str, str], _merge_str_dicts]
     step_durations_ms: Annotated[dict[str, float], _merge_float_dicts]
+
+
+@dataclass(slots=True)
+class ReplyFirstHandle:
+    conversation_id: str
+    state: AgentState
+    finalize_plan: ExecutionPlan
 
 
 class _BackgroundAsyncRunner:
@@ -353,105 +360,95 @@ class KisaragiAgent:
             wrap_step=self._with_step_timing,
         )
 
-    @staticmethod
-    def _resolve_future(
-        loop: asyncio.AbstractEventLoop,
-        future: asyncio.Future[Any],
-        *,
-        result: Any | None = None,
-        error: BaseException | None = None,
-    ) -> None:
-        def _set() -> None:
-            if future.done():
-                return
-            if error is not None:
-                future.set_exception(error)
-                return
-            future.set_result(result)
-
-        try:
-            loop.call_soon_threadsafe(_set)
-        except RuntimeError:
-            # Event loop may already be closed during shutdown.
-            return
-
     async def arun_reply_first(
         self, request: ConversationRequest
-    ) -> tuple[ConversationResponse, asyncio.Future[None], ThreadFuture[bool]]:
-        loop = asyncio.get_running_loop()
-        reply_future: asyncio.Future[ConversationResponse] = loop.create_future()
-        done_future: asyncio.Future[None] = loop.create_future()
-        delivery_future: ThreadFuture[bool] = ThreadFuture()
-        worker = Thread(
-            target=self._run_reply_first_worker,
-            args=(request, loop, reply_future, done_future, delivery_future),
-            name=f"kisaragirin-reply-first-{request.conversation_id}",
-            daemon=True,
-        )
-        worker.start()
-        response = await reply_future
-        return response, done_future, delivery_future
+    ) -> tuple[ConversationResponse, ReplyFirstHandle]:
+        return await asyncio.to_thread(self._run_reply_first, request)
 
-    def _run_reply_first_worker(
+    def _run_reply_first(
         self,
         request: ConversationRequest,
-        loop: asyncio.AbstractEventLoop,
-        reply_future: asyncio.Future[ConversationResponse],
-        done_future: asyncio.Future[None],
-        delivery_future: ThreadFuture[bool],
-    ) -> None:
+    ) -> tuple[ConversationResponse, ReplyFirstHandle]:
         conversation_lock = self._get_conversation_lock(request.conversation_id)
-        try:
-            with conversation_lock:
-                state = self._build_initial_state(request)
-                started_at = time.perf_counter()
-                route_decision = state.get("route_decision")
-                if route_decision is None:
-                    raise RuntimeError("missing route_decision in initial state")
-                route_selection_plan = build_route_selection_plan(route_decision)
-                route_selection_graph = self._build_graph_for_execution_plan(
-                    route_selection_plan
-                )
-                state = route_selection_graph.invoke(state)
-                selected_route_decision = state.get("route_decision") or route_decision
-                execution_plan = self._resolve_execution_plan(
-                    selected_route_decision,
-                    route_id=str(state.get("route_choice", "")),
-                    include_prelude=False,
-                    include_route_selector=False,
-                )
-                state = {
-                    **state,
-                    "route_choice": normalize_route_id(
-                        str(state.get("route_choice", ""))
-                    ),
-                    "execution_plan": execution_plan,
-                }
-                state = execute_graph_until_reply_and_finalize(
-                    initial_state=state,
-                    execution_plan=execution_plan,
-                    implementations=self._step_implementations(),
-                    wrap_step=self._with_step_timing,
-                    delivery_waiter=lambda: bool(delivery_future.result()),
-                    emit_reply=lambda reply_text: self._resolve_future(
-                        loop,
-                        reply_future,
-                        result=ConversationResponse(reply=reply_text),
-                    ),
-                )
-                total_ms = (time.perf_counter() - started_at) * 1000
-                self._log_performance_report(
-                    conversation_id=request.conversation_id,
-                    step_durations_ms=state.get("step_durations_ms"),
-                    reply_completed_ms=state.get("reply_completed_ms"),
-                    total_ms=total_ms,
-                )
-        except Exception as exc:
-            self._resolve_future(loop, reply_future, error=exc)
-            self._resolve_future(loop, done_future, error=exc)
-            return
+        with conversation_lock:
+            state = self._build_initial_state(request)
+            route_decision = state.get("route_decision")
+            if route_decision is None:
+                raise RuntimeError("missing route_decision in initial state")
+            route_selection_plan = build_route_selection_plan(route_decision)
+            route_selection_graph = self._build_graph_for_execution_plan(
+                route_selection_plan
+            )
+            state = route_selection_graph.invoke(state)
+            selected_route_decision = state.get("route_decision") or route_decision
+            execution_plan = self._resolve_execution_plan(
+                selected_route_decision,
+                route_id=str(state.get("route_choice", "")),
+                include_prelude=False,
+                include_route_selector=False,
+                include_finalize=False,
+            )
+            state = {
+                **state,
+                "route_choice": normalize_route_id(
+                    str(state.get("route_choice", ""))
+                ),
+                "execution_plan": execution_plan,
+            }
+            execution_graph = self._build_graph_for_execution_plan(execution_plan)
+            state = execution_graph.invoke(state)
+            return ConversationResponse(
+                reply=str(state.get("reply", "")),
+            ), ReplyFirstHandle(
+                conversation_id=request.conversation_id,
+                state=state,
+                finalize_plan=self._build_finalize_execution_plan(execution_plan),
+            )
 
-        self._resolve_future(loop, done_future, result=None)
+    async def afinalize_reply_first(
+        self,
+        handle: ReplyFirstHandle,
+        *,
+        delivered: bool,
+    ) -> None:
+        await asyncio.to_thread(self._finalize_reply_first, handle, delivered)
+
+    def _finalize_reply_first(
+        self,
+        handle: ReplyFirstHandle,
+        delivered: bool,
+    ) -> None:
+        conversation_lock = self._get_conversation_lock(handle.conversation_id)
+        with conversation_lock:
+            state: AgentState = {
+                **handle.state,
+                "assistant_reply_sent": delivered,
+            }
+            if handle.finalize_plan.graph_spec.nodes:
+                finalize_graph = self._build_graph_for_execution_plan(handle.finalize_plan)
+                state = finalize_graph.invoke(state)
+            run_started_at = state.get("run_started_at_monotonic")
+            total_ms = 0.0
+            if isinstance(run_started_at, (int, float)):
+                total_ms = (time.perf_counter() - float(run_started_at)) * 1000
+            self._log_performance_report(
+                conversation_id=handle.conversation_id,
+                step_durations_ms=state.get("step_durations_ms"),
+                reply_completed_ms=state.get("reply_completed_ms"),
+                total_ms=total_ms,
+            )
+
+    @staticmethod
+    def _build_finalize_execution_plan(execution_plan: ExecutionPlan) -> ExecutionPlan:
+        return ExecutionPlan(
+            route_id=execution_plan.route_id,
+            shared_prelude_graph=EMPTY_GRAPH,
+            route_selector_graph=EMPTY_GRAPH,
+            route_graph=EMPTY_GRAPH,
+            shared_finalize_graph=execution_plan.shared_finalize_graph,
+            graph_spec=execution_plan.shared_finalize_graph,
+            phase_variants=dict(execution_plan.phase_variants),
+        )
 
     def clear_conversation(self, conversation_id: str) -> None:
         conversation_lock = self._get_conversation_lock(conversation_id)

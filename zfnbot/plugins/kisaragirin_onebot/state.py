@@ -24,12 +24,14 @@ class QueuedMessage:
 class GroupState:
     queue: list[QueuedMessage] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    scheduler_event: asyncio.Event = field(default_factory=asyncio.Event)
     last_message_at: float = 0.0
     queue_version: int = 0
     bot_id: str = ""
     replying: bool = False
-    flush_task: asyncio.Task[None] | None = None
-    idle_task: asyncio.Task[None] | None = None
+    reply_token_counter: int = 0
+    active_reply_token: int | None = None
+    scheduler_task: asyncio.Task[None] | None = None
 
 
 _QUEUE_SEQUENCE = count(1)
@@ -87,21 +89,32 @@ def _cancel_task(task: asyncio.Task[None] | None) -> None:
     task.cancel()
 
 
+def _begin_reply_run(state: GroupState) -> int:
+    state.reply_token_counter += 1
+    state.active_reply_token = state.reply_token_counter
+    state.replying = True
+    return state.active_reply_token
+
+
+def _invalidate_reply_run(state: GroupState) -> None:
+    state.reply_token_counter += 1
+    state.active_reply_token = None
+    state.replying = False
+
+
 async def _clear_group_queue(group_id: int) -> None:
     state = _get_group_state(group_id)
     async with state.lock:
         state.queue.clear()
         state.last_message_at = 0.0
         state.queue_version += 1
-        state.replying = False
-        _cancel_task(state.flush_task)
-        _cancel_task(state.idle_task)
+        _invalidate_reply_run(state)
+        state.scheduler_event.set()
 
 
 async def shutdown_plugin() -> None:
     for state in _GROUP_STATES.values():
-        _cancel_task(state.flush_task)
-        _cancel_task(state.idle_task)
+        _cancel_task(state.scheduler_task)
     agents = list(_GROUP_AGENTS.values())
     _GROUP_AGENTS.clear()
     for agent in agents:

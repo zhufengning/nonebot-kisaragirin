@@ -11,7 +11,7 @@ from urllib.parse import unquote_to_bytes
 import httpx
 from kisaragirin import ImageInput
 from nonebot import logger
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent, MessageSegment
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageSegment
 
 from .payload import MessageData, MessageSegmentData
 

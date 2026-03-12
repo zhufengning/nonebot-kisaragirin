@@ -3,13 +3,20 @@
 import asyncio
 import math
 import random
+import time
 
 from nonebot import get_bot, logger
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
 from .config import PLUGIN_CONFIG
 from .payload import build_agent_request
-from .state import GroupState, QueuedMessage, _cancel_task, _get_group_agent, _get_group_state
+from .state import (
+    GroupState,
+    QueuedMessage,
+    _begin_reply_run,
+    _get_group_agent,
+    _get_group_state,
+)
 def _build_request(group_id: int, queue: list[QueuedMessage]):
     payload_messages = [item.payload for item in queue]
     return build_agent_request(
@@ -51,6 +58,9 @@ async def _try_reply(
 ) -> bool:
     state = _get_group_state(group_id)
     queue_snapshot: list[QueuedMessage] = []
+    mention_reference: int | None = None
+    bot_id = ""
+    run_token: int | None = None
     while True:
         should_wait = False
         async with state.lock:
@@ -95,9 +105,7 @@ async def _try_reply(
                 queue_snapshot = list(state.queue)
                 bot_id = state.bot_id
                 state.queue.clear()
-                state.replying = True
-                _cancel_task(state.flush_task)
-                _cancel_task(state.idle_task)
+                run_token = _begin_reply_run(state)
                 break
         if should_wait:
             logger.info(
@@ -125,10 +133,9 @@ async def _try_reply(
         )
 
     sent = False
-    finalize_future: asyncio.Future[None] | None = None
-    delivery_future = None
+    reply_handle = None
     try:
-        response, finalize_future, delivery_future = await _get_group_agent(group_id).arun_reply_first(request)
+        response, reply_handle = await _get_group_agent(group_id).arun_reply_first(request)
         reply_raw = response.reply if isinstance(response.reply, str) else str(response.reply or "")
         logger.debug(
             "reply generated trigger={} group={} chars={}",
@@ -136,6 +143,17 @@ async def _try_reply(
             group_id,
             len(reply_raw),
         )
+
+        async with state.lock:
+            if run_token is None or state.active_reply_token != run_token:
+                logger.info(
+                    "skip reply send trigger={} group={} reason=stale_run run_token={} active_run_token={}",
+                    trigger,
+                    group_id,
+                    run_token,
+                    state.active_reply_token,
+                )
+                return False
 
         try:
             bot = get_bot(bot_id)
@@ -170,16 +188,33 @@ async def _try_reply(
         logger.exception("kisaragirin run failed in group {}", group_id)
         return False
     finally:
-        if delivery_future is not None and not delivery_future.done():
-            delivery_future.set_result(sent)
-        if finalize_future is not None:
+        should_finalize_delivery = sent
+        async with state.lock:
+            if run_token is None or state.active_reply_token != run_token:
+                should_finalize_delivery = False
+        if reply_handle is not None:
             try:
-                await asyncio.shield(finalize_future)
+                await asyncio.shield(
+                    _get_group_agent(group_id).afinalize_reply_first(
+                        reply_handle,
+                        delivered=should_finalize_delivery,
+                    )
+                )
             except asyncio.CancelledError:
                 logger.warning("wait step5 finalize cancelled in group {}", group_id)
             except Exception:
                 logger.exception("step5 finalize failed in group {}", group_id)
         async with state.lock:
+            if run_token is None or state.active_reply_token != run_token:
+                logger.info(
+                    "skip reply finalize trigger={} group={} reason=stale_run run_token={} active_run_token={} sent={}",
+                    trigger,
+                    group_id,
+                    run_token,
+                    state.active_reply_token,
+                    sent,
+                )
+                return False
             if not sent and queue_snapshot:
                 logger.info(
                     "reply not sent, requeue snapshot trigger={} group={} snapshot_size={} current_queue_size={}",
@@ -190,6 +225,7 @@ async def _try_reply(
                 )
                 state.queue.extend(queue_snapshot)
                 state.queue.sort(key=lambda item: (item.created_at, item.sequence))
+            state.active_reply_token = None
             state.replying = False
             if state.queue:
                 _refresh_workers(group_id, state, state.queue_version)
@@ -197,86 +233,109 @@ async def _try_reply(
                 state.last_message_at = 0.0
 
 
-async def _mention_quiet_worker(group_id: int, expected_queue_version: int) -> None:
+async def _scheduler_worker(group_id: int) -> None:
+    state = _get_group_state(group_id)
+    observed_queue_version = -1
+    next_idle_minute_index = 1
     try:
-        await asyncio.sleep(max(0, PLUGIN_CONFIG.timing.mention_quiet_seconds))
-        logger.info(
-            "mention quiet timeout reached group={} quiet_seconds={}",
-            group_id,
-            PLUGIN_CONFIG.timing.mention_quiet_seconds,
-        )
-        await _try_reply(
-            group_id,
-            expected_queue_version,
-            trigger="mention_quiet",
-            require_mention=True,
-            use_mention_reference=True,
-        )
-    except asyncio.CancelledError:
-        return
-
-
-async def _idle_reply_worker(group_id: int, expected_queue_version: int) -> None:
-    start_wait_seconds = max(0, PLUGIN_CONFIG.timing.idle_start_minutes * 60)
-    minute_index = 1
-    try:
-        await asyncio.sleep(start_wait_seconds)
         while True:
-            state = _get_group_state(group_id)
+            wait_seconds: float | None = None
+            trigger: tuple[str, int, bool, bool] | None = None
             async with state.lock:
-                if state.queue_version != expected_queue_version:
-                    return
-                if not state.queue:
-                    return
-            probability = _idle_reply_probability(minute_index)
-            draw = random.random()
-            hit = draw < probability
-            logger.info(
-                "idle draw group={} minute={} probability={:.4f} draw={:.4f} hit={}",
-                group_id,
-                minute_index,
-                probability,
-                draw,
-                hit,
-            )
-            if hit:
+                if state.queue_version != observed_queue_version:
+                    observed_queue_version = state.queue_version
+                    next_idle_minute_index = 1
+                state.scheduler_event.clear()
+                if state.replying or not state.queue:
+                    wait_seconds = None
+                else:
+                    now = time.time()
+                    mention_reference = _mention_reference_id(state.queue)
+                    quiet_seconds = max(0.0, float(PLUGIN_CONFIG.timing.mention_quiet_seconds))
+                    if mention_reference is not None:
+                        quiet_due_at = state.last_message_at + quiet_seconds
+                        if now >= quiet_due_at:
+                            logger.info(
+                                "mention quiet timeout reached group={} quiet_seconds={}",
+                                group_id,
+                                PLUGIN_CONFIG.timing.mention_quiet_seconds,
+                            )
+                            trigger = (
+                                "mention_quiet",
+                                observed_queue_version,
+                                True,
+                                True,
+                            )
+                        else:
+                            wait_seconds = max(0.0, quiet_due_at - now)
+                    else:
+                        idle_started_at = state.last_message_at + max(
+                            0.0,
+                            float(PLUGIN_CONFIG.timing.idle_start_minutes * 60),
+                        )
+                        next_draw_at = idle_started_at + max(0, next_idle_minute_index - 1) * 60
+                        if now >= next_draw_at:
+                            probability = _idle_reply_probability(next_idle_minute_index)
+                            draw = random.random()
+                            hit = draw < probability
+                            logger.info(
+                                "idle draw group={} minute={} probability={:.4f} draw={:.4f} hit={}",
+                                group_id,
+                                next_idle_minute_index,
+                                probability,
+                                draw,
+                                hit,
+                            )
+                            if hit:
+                                trigger = (
+                                    f"idle_random_m{next_idle_minute_index}",
+                                    observed_queue_version,
+                                    False,
+                                    False,
+                                )
+                            next_idle_minute_index += 1
+                            if trigger is None:
+                                next_draw_at = idle_started_at + max(
+                                    0,
+                                    next_idle_minute_index - 1,
+                                ) * 60
+                                wait_seconds = max(0.0, next_draw_at - time.time())
+                        else:
+                            wait_seconds = max(0.0, next_draw_at - now)
+            if trigger is not None:
                 replied = await _try_reply(
                     group_id,
-                    expected_queue_version,
-                    trigger=f"idle_random_m{minute_index}",
-                    require_mention=False,
-                    use_mention_reference=False,
+                    trigger[1],
+                    trigger=trigger[0],
+                    require_mention=trigger[2],
+                    use_mention_reference=trigger[3],
                 )
                 if replied:
-                    return
-            minute_index += 1
-            await asyncio.sleep(60)
+                    continue
+                continue
+            if wait_seconds is None:
+                await state.scheduler_event.wait()
+                continue
+            try:
+                await asyncio.wait_for(state.scheduler_event.wait(), timeout=wait_seconds)
+            except asyncio.TimeoutError:
+                continue
     except asyncio.CancelledError:
         return
 
 
 def _refresh_workers(group_id: int, state: GroupState, expected_queue_version: int) -> None:
-    if state.replying:
-        logger.debug(
-            "workers refresh deferred group={} reason=reply_in_progress queue_version={}",
-            group_id,
-            expected_queue_version,
+    if state.scheduler_task is None or state.scheduler_task.done():
+        state.scheduler_task = asyncio.create_task(
+            _scheduler_worker(group_id),
+            name=f"kisaragirin-scheduler-{group_id}",
         )
-        return
-    _cancel_task(state.flush_task)
-    _cancel_task(state.idle_task)
-    state.flush_task = asyncio.create_task(
-        _mention_quiet_worker(group_id, expected_queue_version),
-        name=f"kisaragirin-flush-{group_id}",
-    )
-    state.idle_task = asyncio.create_task(
-        _idle_reply_worker(group_id, expected_queue_version),
-        name=f"kisaragirin-idle-{group_id}",
-    )
+    state.scheduler_event.set()
     logger.debug(
-        "workers refreshed group={} queue_version={} quiet_seconds={} idle_start_minutes={}",
+        "scheduler refreshed group={} queue_version={} replying={} quiet_seconds={} idle_start_minutes={}",
         group_id,
         expected_queue_version,
+        state.replying,
         PLUGIN_CONFIG.timing.mention_quiet_seconds,
         PLUGIN_CONFIG.timing.idle_start_minutes,
     )

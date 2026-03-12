@@ -2,7 +2,7 @@
 
 请在做出任何修改后检查是否需要更新README, AGENTS.md以及其他文档。
 
-请在修改代码后使用ty check和basedpyright检查并修复报错。
+请在修改代码后使用ty check和ruff check检查并修复报错。
 
 ## 目录索引
 
