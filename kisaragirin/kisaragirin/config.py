@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Mapping, Self, Sequence, TypedDict, Unpack
@@ -111,7 +111,20 @@ class ConversationRequest:
     debug: bool = False
 
 
+@dataclass(slots=True, frozen=True)
+class OutputEvent:
+    event_id: str
+    event_type: str
+    route_id: str
+    content: str
+    order: int
+    final: bool = True
+    dedupe_key: str = ""
+
+
 @dataclass(slots=True)
 class ConversationResponse:
-    reply: str
+    reply: str = ""
+    outputs: list[OutputEvent] = field(default_factory=list)
+    cancelled: bool = False
 

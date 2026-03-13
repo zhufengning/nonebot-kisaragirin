@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import base64
 import csv
@@ -302,8 +302,9 @@ async def _parse_segments(
         try:
             info = await bot.get_group_member_info(group_id=group_id, user_id=user_id)
             if isinstance(info, dict):
+                card = str(info.get("card") or "").strip()
                 nickname = str(info.get("nickname") or "").strip()
-                name = nickname or name
+                name = card or nickname or name
         except Exception:
             logger.opt(exception=True).debug(
                 "get_group_member_info failed group={} message_id={} user_id={}",

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 
@@ -54,9 +54,8 @@ def run_reply_lite(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_memory_gate(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
-    should_update_memory = bool(state.get("assistant_reply_sent", True)) and bool(
-        str(state.get("reply", "")).strip()
-    ) and str(state.get("reply", "")).strip() != "bot选择沉默"
+    delivered_outputs = state.get("delivered_outputs") or []
+    should_update_memory = bool(delivered_outputs)
     memory_gate_result = "update" if should_update_memory else "skip"
     attachment = (
         "[MEMORY-GATE]\n"
@@ -82,6 +81,14 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
             "step_attachments": agent._set_attachment(state, "memory", attachment),
         }
 
+    delivered_outputs = state.get("delivered_outputs") or []
+    delivered_reply_blocks: list[str] = []
+    for index, output in enumerate(delivered_outputs, start=1):
+        route_id = getattr(output, "route_id", "") or "unknown"
+        content = getattr(output, "content", "") or ""
+        delivered_reply_blocks.append(f"{index}. route={route_id}\n{content}")
+    delivered_reply_text = "\n\n".join(delivered_reply_blocks).strip()
+
     memory_model = agent._model(agent._config.step_models.memory)
 
     msg = memory_model.invoke(
@@ -94,8 +101,8 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
                     f"{state.get('long_term_memory') or '(empty)'}\n\n"
                     "[THIS-TURN-ENRICHED-INPUT]\n"
                     f"{state['working_text']}\n\n"
-                    "[THIS-TURN-REPLY]\n"
-                    f"{state.get('reply', '')}"
+                    "[THIS-TURN-REPLIES]\n"
+                    f"{delivered_reply_text or '(empty)'}"
                 )
             ),
         ]
@@ -135,7 +142,7 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         conversation_id=state["conversation_id"],
         long_term_memory=new_long_term,
         user_message=str(state.get("user_message", "")),
-        assistant_reply=state.get("reply", ""),
+        assistant_reply=delivered_reply_text,
         user_image_hashes=state.get("image_hashes") or [],
     )
 

@@ -1,4 +1,4 @@
-﻿# Graph 开发指南
+# Graph 开发指南
 
 这份文档面向维护 `kisaragirin` 图流程的开发者，说明如何：
 
@@ -101,9 +101,18 @@ def run_memory_gate(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
 - `step_name`：调试日志与 step 附件使用的内部名称
 - `default_node_name`：默认节点名
-- `emits_reply`：该节点是否是 reply-first 的返回点
+- `step_class`：节点类别；普通节点默认是 `default`
+- `output_key`：reply 类节点向状态里写出的输出字段
 
-只有 reply 类节点才应该设置 `emits_reply=True`。
+如果一个节点属于 reply 类，推荐直接使用：
+
+```python
+"reply": {
+    "default": reply_step_metadata("reply", "reply"),
+},
+```
+
+这会把节点注册成 `step_class="reply"`，并声明它使用 `reply` 作为输出字段。后续如果要增加格式审核、改写、合规检查等“发言链路里的节点”，可以继续复用这个入口，只在真正对外产出消息的那个节点上注册为 reply 类。
 
 ## 3. 如何把节点接入图
 
@@ -190,13 +199,13 @@ GraphSpec(
 对于 `route`，当前实现不再把 `default` 和 `lite_chat` 两条路径写在同一张图里，而是拆成三段：
 
 - `shared_prelude_graph`：共享前段（prepare/url/vision/enrich_merge）
-- `route_selector_graph`：只负责执行 `route` 节点并写出 `route_choice`
-- `route_graph`：根据 `route_choice` 选择一张独立路径图，例如 `default_route_graph` 或 `lite_chat_route_graph`
+- `route_selector_graph`：只负责执行 `route` 节点并写出 `route_choices`
+- `route_graph`：根据 `route_choices` 中的每个 route id 依次装配独立路径图，例如 `default_route_graph` 或 `lite_chat_route_graph`
 
 也就是说：
 
-- `route` 节点只负责在 state 里写 `route_choice`
-- Agent 运行时会先跑共享前段和选路图，再装配对应的独立路径图继续执行
+- `route` 节点只负责在 state 里写 `route_choices`
+- Agent 运行时会先跑共享前段和选路图，再按 `route_choices` 逐条装配对应的独立路径图继续执行
 
 这种方式的优点是：
 
@@ -206,7 +215,7 @@ GraphSpec(
 
 ### 3.5 路由节点
 
-当前仓库里的 `route` 节点会使用 `step_models.route` 指定的轻量模型，在 `default` 与 `lite_chat` 路径间做判断；判断完成后，Agent 会装配对应的独立路径图继续执行。
+当前仓库里的 `route` 节点会使用 `step_models.route` 指定的轻量模型，根据输入里给出的路径描述输出一个 route id 数组；判断完成后，Agent 会按数组顺序装配对应的独立路径图继续执行。数组允许为空，表示整轮选择沉默。
 
 注意：`lite_chat` 路径虽然跳过工具调用，但回复节点会优先使用 `step_models.lite_reply`；若未配置，则回退到 `step_models.reply`。
 
@@ -228,15 +237,15 @@ GraphSpec(
 当前 reply-first 不是单独维护一套步骤顺序，而是复用 `ExecutionPlan` 和 `GraphSpec`：
 
 - 先按图规格解析出节点
-- 找到第一个 `emits_reply=True` 的节点（例如 `reply` 或 `reply_lite`）作为对外返回点
-- 返回后，图继续跑 finalize 部分（例如 `memory_gate`、`memory`）
+- 找到 reply 类节点（例如 `reply` 或 `reply_lite`），把其输出收集成 `OutputEvent`
+- 全部路径中段结束后，再统一进入 finalize 部分（例如 `memory_gate`、`memory`）
 
 因此如果你加了新的 reply 节点，需要确认：
 
 1. 它是否应成为对外返回点
-2. 若是，就在 `StepMetadata(..., emits_reply=True)` 标出来
+2. 若是，就用 `reply_step_metadata(...)` 把它注册成 reply 类节点
 
-如果一条执行路径里没有任何 `emits_reply=True` 的节点，reply-first 会报错。
+如果一条执行路径里没有任何 reply 类节点，它就不会产生输出事件。
 
 ## 5. 如何新增一个新节点：推荐步骤
 
@@ -334,17 +343,17 @@ GraphNodeSpec(node_id="planner", phase="planner")
 
 ## 7. 目前的局限
 
-当前自定义执行器已经支持：
+当前系统已经支持：
 
 - 顺序图
 - 并行批执行
 - 条件分支
-- reply-first 返回点截断
+- route fan-out 多路径执行
+- `OutputEvent` 输出契约
+- reply-first 统一收尾记忆
 
 但还没有正式支持：
 
-- fan-out 多路径多次回复
-- emission / output-event 流式发送
 - 通用循环控制（虽然底层可由条件边 + 回边表达）
 
 后续如果要加这些能力，建议继续在 `GraphSpec` 和 `orchestration.py` 层扩展，而不要把逻辑重新塞回 `agent.py`。

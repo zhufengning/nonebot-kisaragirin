@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -17,7 +17,22 @@ StepImplementationRegistry = dict[str, dict[str, StepHandler]]
 class StepMetadata:
     step_name: str
     default_node_name: str
-    emits_reply: bool = False
+    step_class: str = "default"
+    output_key: str | None = None
+
+
+def reply_step_metadata(
+    step_name: str,
+    default_node_name: str,
+    *,
+    output_key: str = "reply",
+) -> StepMetadata:
+    return StepMetadata(
+        step_name=step_name,
+        default_node_name=default_node_name,
+        step_class="reply",
+        output_key=output_key,
+    )
 
 
 DEFAULT_STEP_METADATA: dict[str, dict[str, StepMetadata]] = {
@@ -40,8 +55,8 @@ DEFAULT_STEP_METADATA: dict[str, dict[str, StepMetadata]] = {
         "default": StepMetadata("tools", "tools"),
     },
     "reply": {
-        "default": StepMetadata("reply", "reply", emits_reply=True),
-        "lite": StepMetadata("reply_lite", "reply_lite", emits_reply=True),
+        "default": reply_step_metadata("reply", "reply"),
+        "lite": reply_step_metadata("reply_lite", "reply_lite"),
     },
     "memory_gate": {
         "default": StepMetadata("memory_gate", "memory_gate"),
@@ -60,7 +75,8 @@ class ResolvedStep:
     step_name: str
     node_name: str
     handler: StepHandler
-    emits_reply: bool = False
+    step_class: str = "default"
+    output_key: str | None = None
 
 
 @dataclass(slots=True)
@@ -100,7 +116,8 @@ def resolve_graph_steps(
             step_name=step_meta.step_name,
             node_name=node.node_id or step_meta.default_node_name,
             handler=handler,
-            emits_reply=step_meta.emits_reply,
+            step_class=step_meta.step_class,
+            output_key=step_meta.output_key,
         )
     return resolved_steps
 
@@ -371,7 +388,7 @@ def execute_graph_until_reply_and_finalize(
         emitted_in_batch = [
             resolved_steps[node_id]
             for node_id in ready_node_ids
-            if resolved_steps[node_id].emits_reply
+            if resolved_steps[node_id].output_key
         ]
         if emitted_in_batch and not reply_emitted:
             reply_emitted = True

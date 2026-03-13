@@ -1,4 +1,4 @@
-﻿# nonebot_kisaragirin
+# nonebot_kisaragirin
 
 基于 NoneBot2 + OneBot V11 的群聊机器人项目，核心对话流程由本地包 `kisaragirin` 提供。
 

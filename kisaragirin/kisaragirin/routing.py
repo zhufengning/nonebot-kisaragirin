@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Iterable
 
 DEFAULT_ROUTE_ID = "default"
 LITE_CHAT_ROUTE_ID = "lite_chat"
@@ -114,11 +115,15 @@ DEFAULT_SHARED_FINALIZE_GRAPH = GraphSpec(
 @dataclass(slots=True, frozen=True)
 class RouteDecision:
     route_id: str
+    route_ids: tuple[str, ...]
     shared_prelude_graph: GraphSpec
     route_selector_graph: GraphSpec
     route_graphs: dict[str, GraphSpec]
     shared_finalize_graph: GraphSpec
     phase_variants_by_route: dict[str, dict[str, str]] = field(default_factory=dict)
+    route_descriptions: dict[str, str] = field(default_factory=dict)
+    route_processing_instructions: dict[str, str] = field(default_factory=dict)
+    default_route_choices: tuple[str, ...] = field(default_factory=lambda: (DEFAULT_ROUTE_ID,))
     reason: str = ""
 
 
@@ -139,9 +144,22 @@ def normalize_route_id(route_id: str) -> str:
     return DEFAULT_ROUTE_ID
 
 
+def normalize_route_ids(route_ids: Iterable[str]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for route_id in route_ids:
+        normalized_route_id = normalize_route_id(str(route_id).strip().lower())
+        if normalized_route_id in seen:
+            continue
+        seen.add(normalized_route_id)
+        normalized.append(normalized_route_id)
+    return tuple(normalized)
+
+
 def build_default_route_decision() -> RouteDecision:
     return RouteDecision(
         route_id=DEFAULT_ROUTE_ID,
+        route_ids=(DEFAULT_ROUTE_ID, LITE_CHAT_ROUTE_ID),
         shared_prelude_graph=DEFAULT_SHARED_PRELUDE_GRAPH,
         route_selector_graph=DEFAULT_ROUTE_SELECTOR_GRAPH,
         route_graphs={
@@ -158,6 +176,29 @@ def build_default_route_decision() -> RouteDecision:
                 "reply": "lite",
             },
         },
+        route_descriptions={
+            DEFAULT_ROUTE_ID: (
+                "处理技术提问、技术文章分享、技术讨论、事实判断、需要联网/工具、需要较重分析或推理的消息。"
+                "同一轮消息里如果只是情绪化吐槽、闲聊、接梗、寒暄，不要选这条路径。"
+            ),
+            LITE_CHAT_ROUTE_ID: (
+                "处理轻量闲聊、接梗、生活吐槽、情绪化吐槽、短情绪回应、梗图互动。"
+                "如果消息主要在做技术提问、分享技术文章、讨论技术细节、事实求证、需要查资料或需要较重分析，不要选这条路径。"
+            ),
+        },
+        route_processing_instructions={
+            DEFAULT_ROUTE_ID: (
+                "你当前位于技术路径。只处理本轮消息里属于技术提问、技术文章分享、技术讨论、事实求证、需要工具或分析的部分。"
+                "其余不属于技术路径的输入会由其他路径处理，你必须忽略闲聊、接梗、情绪化吐槽、寒暄等内容。"
+                "如果筛完后没有值得你回复的内容，输出「bot选择沉默」。"
+            ),
+            LITE_CHAT_ROUTE_ID: (
+                "你当前位于休闲路径。只处理本轮消息里属于闲聊、接梗、轻松吐槽、情绪化吐槽、短情绪回应的部分。"
+                "技术提问、技术文章分享、技术讨论、事实求证、需要工具或严肃分析的内容会由其他路径处理，你必须忽略这些部分。"
+                "如果筛完后没有值得你回复的内容，输出「bot选择沉默」。"
+            ),
+        },
+        default_route_choices=(DEFAULT_ROUTE_ID,),
         reason="default-route",
     )
 

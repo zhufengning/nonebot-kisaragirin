@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import base64
@@ -21,7 +21,13 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 
-from .config import AgentConfig, ConversationRequest, ConversationResponse, ImageInput
+from .config import (
+    AgentConfig,
+    ConversationRequest,
+    ConversationResponse,
+    ImageInput,
+    OutputEvent,
+)
 from .memory import ShortTermMessage, SQLiteMemoryStore
 from .orchestration import StepImplementationRegistry
 from .prompts import (
@@ -54,7 +60,7 @@ from .routing import (
     build_default_route_decision,
     build_route_selection_plan,
     build_execution_plan,
-    normalize_route_id,
+    normalize_route_ids,
 )
 from .tools import build_default_tools
 
@@ -117,6 +123,8 @@ class AgentState(TypedDict, total=False):
     url_appendix: str
     vision_appendix: str
     route_choice: str
+    route_choices: list[str]
+    active_route_id: str
     memory_gate_result: str
     route_decision: RouteDecision
     execution_plan: ExecutionPlan
@@ -132,6 +140,8 @@ class AgentState(TypedDict, total=False):
     short_term_context: str
     working_text: str
     reply: str
+    output_events: list[OutputEvent]
+    delivered_outputs: list[OutputEvent]
     reply_completed_ms: float
     step_attachments: Annotated[dict[str, str], _merge_str_dicts]
     step_durations_ms: Annotated[dict[str, float], _merge_float_dicts]
@@ -229,30 +239,22 @@ class KisaragiAgent:
         with conversation_lock:
             initial_state = self._build_initial_state(request)
             started_at = time.perf_counter()
-            route_decision = initial_state.get("route_decision")
-            if route_decision is None:
-                raise RuntimeError("missing route_decision in initial state")
-            route_selection_plan = build_route_selection_plan(route_decision)
-            route_selection_graph = self._build_graph_for_execution_plan(
-                route_selection_plan
+            state_after_route = self._run_route_selection(initial_state)
+            result = self._run_selected_routes(state_after_route)
+            delivered_output_ids = [
+                output.event_id for output in (result.get("output_events") or [])
+            ]
+            finalize_plan = self._build_finalize_execution_plan(
+                result.get("route_decision")
             )
-            state_after_route = route_selection_graph.invoke(initial_state)
-            execution_plan = self._resolve_execution_plan(
-                route_decision,
-                route_id=str(state_after_route.get("route_choice", "")),
-                include_prelude=False,
-                include_route_selector=False,
-            )
-            execution_graph = self._build_graph_for_execution_plan(execution_plan)
-            result = execution_graph.invoke(
-                {
-                    **state_after_route,
-                    "route_choice": normalize_route_id(
-                        str(state_after_route.get("route_choice", ""))
-                    ),
-                    "execution_plan": execution_plan,
-                }
-            )
+            if finalize_plan.graph_spec.nodes:
+                finalize_graph = self._build_graph_for_execution_plan(finalize_plan)
+                result = finalize_graph.invoke(
+                    self._state_with_delivery_results(
+                        result,
+                        delivered_output_ids=delivered_output_ids,
+                    )
+                )
             total_ms = (time.perf_counter() - started_at) * 1000
             self._log_performance_report(
                 conversation_id=request.conversation_id,
@@ -260,9 +262,11 @@ class KisaragiAgent:
                 reply_completed_ms=result.get("reply_completed_ms"),
                 total_ms=total_ms,
             )
-
+            outputs = list(result.get("output_events") or [])
             return ConversationResponse(
-                reply=str(result.get("reply", "")),
+                reply=self._join_output_texts(outputs),
+                outputs=outputs,
+                cancelled=not outputs,
             )
 
     async def arun(self, request: ConversationRequest) -> ConversationResponse:
@@ -282,10 +286,14 @@ class KisaragiAgent:
             "url_appendix": "",
             "vision_appendix": "",
             "route_choice": "",
+            "route_choices": [],
+            "active_route_id": "",
             "memory_gate_result": "",
             "route_decision": route_decision,
             "execution_plan": execution_plan,
             "debug": request.debug,
+            "output_events": [],
+            "delivered_outputs": [],
             "step_attachments": {},
         }
 
@@ -309,6 +317,161 @@ class KisaragiAgent:
             include_finalize=include_finalize,
         )
 
+    def _run_route_selection(self, initial_state: AgentState) -> AgentState:
+        route_decision = initial_state.get("route_decision")
+        if route_decision is None:
+            raise RuntimeError("missing route_decision in initial state")
+        route_selection_plan = build_route_selection_plan(route_decision)
+        route_selection_graph = self._build_graph_for_execution_plan(route_selection_plan)
+        state_after_route = route_selection_graph.invoke(initial_state)
+        normalized_route_choices = list(
+            normalize_route_ids(state_after_route.get("route_choices") or [])
+        )
+        return {
+            **state_after_route,
+            "route_choices": normalized_route_choices,
+            "execution_plan": route_selection_plan,
+        }
+
+    def _run_selected_routes(self, state: AgentState) -> AgentState:
+        route_decision = state.get("route_decision")
+        if route_decision is None:
+            raise RuntimeError("missing route_decision in state")
+
+        raw_route_choices = state.get("route_choices")
+        if raw_route_choices is None:
+            route_choices = list(route_decision.default_route_choices)
+        else:
+            route_choices = list(normalize_route_ids(raw_route_choices))
+        aggregated_state: AgentState = {
+            **state,
+            "route_choices": route_choices,
+            "output_events": [],
+        }
+        output_events: list[OutputEvent] = []
+        all_step_attachments = dict(state.get("step_attachments", {}))
+        all_step_durations = dict(state.get("step_durations_ms", {}))
+        max_reply_completed_ms = float(state.get("reply_completed_ms", 0.0) or 0.0)
+
+        for route_index, route_id in enumerate(route_choices):
+            execution_plan = self._resolve_execution_plan(
+                route_decision,
+                route_id=route_id,
+                include_prelude=False,
+                include_route_selector=False,
+                include_finalize=False,
+            )
+            reply_output_key = self._reply_output_key_for_execution_plan(execution_plan)
+            route_state: AgentState = {
+                **state,
+                "route_choice": route_id,
+                "active_route_id": route_id,
+                "route_choices": route_choices,
+                "working_text": self._route_scoped_working_text(state, route_id),
+                "execution_plan": execution_plan,
+                "reply": "",
+                "output_events": [],
+                "delivered_outputs": [],
+                "step_attachments": {},
+                "step_durations_ms": {},
+            }
+            execution_graph = self._build_graph_for_execution_plan(execution_plan)
+            route_result = execution_graph.invoke(route_state)
+
+            prefixed_attachments = self._prefix_state_map(
+                route_result.get("step_attachments"),
+                prefix=route_id,
+            )
+            prefixed_durations = self._prefix_state_map(
+                route_result.get("step_durations_ms"),
+                prefix=route_id,
+            )
+            all_step_attachments.update(prefixed_attachments)
+            for key, value in prefixed_durations.items():
+                try:
+                    all_step_durations[key] = float(value)
+                except Exception:
+                    continue
+
+            reply_text = ""
+            if reply_output_key:
+                reply_text = str(route_result.get(reply_output_key, "") or "").strip()
+            if reply_text and reply_text != "bot选择沉默":
+                output_event = OutputEvent(
+                    event_id=f"{route_id}:{route_index}",
+                    event_type="reply",
+                    route_id=route_id,
+                    content=reply_text,
+                    order=route_index,
+                    dedupe_key=f"{route_id}:{route_index}",
+                )
+                output_events.append(output_event)
+
+            reply_completed_ms = route_result.get("reply_completed_ms")
+            if isinstance(reply_completed_ms, (int, float)):
+                max_reply_completed_ms = max(
+                    max_reply_completed_ms,
+                    float(reply_completed_ms),
+                )
+
+        aggregated_state["step_attachments"] = all_step_attachments
+        aggregated_state["step_durations_ms"] = all_step_durations
+        aggregated_state["reply_completed_ms"] = max_reply_completed_ms
+        aggregated_state["output_events"] = output_events
+        aggregated_state["reply"] = self._join_output_texts(output_events)
+        return aggregated_state
+
+    def _route_scoped_working_text(self, state: AgentState, route_id: str) -> str:
+        route_decision = state.get("route_decision")
+        if route_decision is None:
+            raise RuntimeError("missing route_decision in state")
+        route_instruction = (
+            route_decision.route_processing_instructions.get(route_id, "").strip()
+            or "(empty)"
+        )
+        base_working_text = str(state.get("working_text", ""))
+        return (
+            f"{base_working_text}\n\n"
+            "[ACTIVE-ROUTE]\n"
+            f"route_id: {route_id}\n"
+            "[ROUTE-INSTRUCTION]\n"
+            f"{route_instruction}"
+        )
+
+    @staticmethod
+    def _prefix_state_map(
+        source: dict[str, Any] | None,
+        *,
+        prefix: str,
+    ) -> dict[str, Any]:
+        if not isinstance(source, dict):
+            return {}
+        return {f"{prefix}.{key}": value for key, value in source.items()}
+
+    @staticmethod
+    def _join_output_texts(outputs: Sequence[OutputEvent]) -> str:
+        texts = [output.content.strip() for output in outputs if output.content.strip()]
+        return "\n\n".join(texts)
+
+    def _state_with_delivery_results(
+        self,
+        state: AgentState,
+        *,
+        delivered_output_ids: Sequence[str],
+    ) -> AgentState:
+        delivered_id_set = {str(item) for item in delivered_output_ids}
+        delivered_outputs = [
+            output
+            for output in (state.get("output_events") or [])
+            if output.event_id in delivered_id_set
+        ]
+        return {
+            **state,
+            "assistant_reply_sent": bool(delivered_outputs),
+            "delivered_outputs": delivered_outputs,
+            "reply": self._join_output_texts(delivered_outputs),
+        }
+
     def _execution_steps(
         self, execution_plan: ExecutionPlan
     ) -> list[tuple[str, str, Any]]:
@@ -319,6 +482,22 @@ class KisaragiAgent:
                 self._step_implementations(),
             )
         ]
+
+    def _reply_output_key_for_execution_plan(
+        self,
+        execution_plan: ExecutionPlan,
+    ) -> str | None:
+        reply_output_keys = [
+            step.output_key
+            for step in resolve_all_steps(
+                execution_plan,
+                self._step_implementations(),
+            )
+            if step.output_key
+        ]
+        if not reply_output_keys:
+            return None
+        return str(reply_output_keys[-1])
 
     def _step_implementations(self) -> StepImplementationRegistry:
         return {
@@ -372,58 +551,44 @@ class KisaragiAgent:
         conversation_lock = self._get_conversation_lock(request.conversation_id)
         with conversation_lock:
             state = self._build_initial_state(request)
-            route_decision = state.get("route_decision")
-            if route_decision is None:
-                raise RuntimeError("missing route_decision in initial state")
-            route_selection_plan = build_route_selection_plan(route_decision)
-            route_selection_graph = self._build_graph_for_execution_plan(
-                route_selection_plan
-            )
-            state = route_selection_graph.invoke(state)
-            selected_route_decision = state.get("route_decision") or route_decision
-            execution_plan = self._resolve_execution_plan(
-                selected_route_decision,
-                route_id=str(state.get("route_choice", "")),
-                include_prelude=False,
-                include_route_selector=False,
-                include_finalize=False,
-            )
-            state = {
-                **state,
-                "route_choice": normalize_route_id(
-                    str(state.get("route_choice", ""))
-                ),
-                "execution_plan": execution_plan,
-            }
-            execution_graph = self._build_graph_for_execution_plan(execution_plan)
-            state = execution_graph.invoke(state)
+            state = self._run_route_selection(state)
+            state = self._run_selected_routes(state)
+            output_events = list(state.get("output_events") or [])
             return ConversationResponse(
-                reply=str(state.get("reply", "")),
+                reply=self._join_output_texts(output_events),
+                outputs=output_events,
+                cancelled=not output_events,
             ), ReplyFirstHandle(
                 conversation_id=request.conversation_id,
                 state=state,
-                finalize_plan=self._build_finalize_execution_plan(execution_plan),
+                finalize_plan=self._build_finalize_execution_plan(
+                    state.get("route_decision")
+                ),
             )
 
     async def afinalize_reply_first(
         self,
         handle: ReplyFirstHandle,
         *,
-        delivered: bool,
+        delivered_output_ids: Sequence[str],
     ) -> None:
-        await asyncio.to_thread(self._finalize_reply_first, handle, delivered)
+        await asyncio.to_thread(
+            self._finalize_reply_first,
+            handle,
+            delivered_output_ids,
+        )
 
     def _finalize_reply_first(
         self,
         handle: ReplyFirstHandle,
-        delivered: bool,
+        delivered_output_ids: Sequence[str],
     ) -> None:
         conversation_lock = self._get_conversation_lock(handle.conversation_id)
         with conversation_lock:
-            state: AgentState = {
-                **handle.state,
-                "assistant_reply_sent": delivered,
-            }
+            state = self._state_with_delivery_results(
+                handle.state,
+                delivered_output_ids=delivered_output_ids,
+            )
             if handle.finalize_plan.graph_spec.nodes:
                 finalize_graph = self._build_graph_for_execution_plan(handle.finalize_plan)
                 state = finalize_graph.invoke(state)
@@ -439,15 +604,19 @@ class KisaragiAgent:
             )
 
     @staticmethod
-    def _build_finalize_execution_plan(execution_plan: ExecutionPlan) -> ExecutionPlan:
+    def _build_finalize_execution_plan(
+        route_decision: RouteDecision | None,
+    ) -> ExecutionPlan:
+        if route_decision is None:
+            raise RuntimeError("missing route_decision for finalize plan")
         return ExecutionPlan(
-            route_id=execution_plan.route_id,
+            route_id="finalize",
             shared_prelude_graph=EMPTY_GRAPH,
             route_selector_graph=EMPTY_GRAPH,
             route_graph=EMPTY_GRAPH,
-            shared_finalize_graph=execution_plan.shared_finalize_graph,
-            graph_spec=execution_plan.shared_finalize_graph,
-            phase_variants=dict(execution_plan.phase_variants),
+            shared_finalize_graph=route_decision.shared_finalize_graph,
+            graph_spec=route_decision.shared_finalize_graph,
+            phase_variants={},
         )
 
     def clear_conversation(self, conversation_id: str) -> None:

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import math
@@ -132,16 +132,25 @@ async def _try_reply(
             [str(item.message_id) for item in queue_snapshot],
         )
 
-    sent = False
+    sent_any = False
+    cancelled = False
+    delivered_output_ids: list[str] = []
     reply_handle = None
     try:
         response, reply_handle = await _get_group_agent(group_id).arun_reply_first(request)
         reply_raw = response.reply if isinstance(response.reply, str) else str(response.reply or "")
+        outputs = sorted(
+            list(response.outputs or []),
+            key=lambda item: int(getattr(item, "order", 0)),
+        )
+        cancelled = bool(response.cancelled)
         logger.debug(
-            "reply generated trigger={} group={} chars={}",
+            "reply generated trigger={} group={} chars={} outputs={} cancelled={}",
             trigger,
             group_id,
             len(reply_raw),
+            len(outputs),
+            cancelled,
         )
 
         async with state.lock:
@@ -161,25 +170,56 @@ async def _try_reply(
             logger.warning("bot {} is unavailable, skip reply for group {}", bot_id, group_id)
             return False
 
-        message = Message()
-        if use_mention_reference and mention_reference is not None:
-            message.append(MessageSegment.reply(mention_reference))
-        reply_text = reply_raw.strip() or "..."
-        message.append(MessageSegment.text(reply_text))
+        if not outputs:
+            logger.info(
+                "reply cancelled trigger={} group={} queue_size={}",
+                trigger,
+                group_id,
+                len(queue_snapshot),
+            )
+            return True
 
-        try:
-            await bot.send_group_msg(group_id=group_id, message=message)
-        except Exception:
-            logger.exception("send reply failed in group {}", group_id)
-            return False
-        logger.info(
-            "reply sent trigger={} group={} queue_size={}",
-            trigger,
-            group_id,
-            len(queue_snapshot),
-        )
+        for output_index, output in enumerate(outputs):
+            message = Message()
+            if (
+                output_index == 0
+                and use_mention_reference
+                and mention_reference is not None
+            ):
+                message.append(MessageSegment.reply(mention_reference))
+            reply_text = str(getattr(output, "content", "") or "").strip() or "..."
+            message.append(MessageSegment.text(reply_text))
 
-        sent = True
+            try:
+                await bot.send_group_msg(group_id=group_id, message=message)
+            except Exception:
+                logger.exception(
+                    "send reply failed in group {} output_index={} route={}",
+                    group_id,
+                    output_index,
+                    getattr(output, "route_id", ""),
+                )
+                if sent_any:
+                    logger.warning(
+                        "partial reply sent trigger={} group={} delivered_outputs={}",
+                        trigger,
+                        group_id,
+                        len(delivered_output_ids),
+                    )
+                    return True
+                return False
+
+            sent_any = True
+            delivered_output_ids.append(str(getattr(output, "event_id", "")))
+            logger.info(
+                "reply sent trigger={} group={} output_index={} route={} queue_size={}",
+                trigger,
+                group_id,
+                output_index,
+                getattr(output, "route_id", ""),
+                len(queue_snapshot),
+            )
+
         return True
     except asyncio.CancelledError:
         logger.info("cancel reply trigger={} group={} reason=reply_task_cancelled", trigger, group_id)
@@ -188,16 +228,16 @@ async def _try_reply(
         logger.exception("kisaragirin run failed in group {}", group_id)
         return False
     finally:
-        should_finalize_delivery = sent
+        should_finalize_delivery_ids = list(delivered_output_ids)
         async with state.lock:
             if run_token is None or state.active_reply_token != run_token:
-                should_finalize_delivery = False
+                should_finalize_delivery_ids = []
         if reply_handle is not None:
             try:
                 await asyncio.shield(
                     _get_group_agent(group_id).afinalize_reply_first(
                         reply_handle,
-                        delivered=should_finalize_delivery,
+                        delivered_output_ids=should_finalize_delivery_ids,
                     )
                 )
             except asyncio.CancelledError:
@@ -212,10 +252,10 @@ async def _try_reply(
                     group_id,
                     run_token,
                     state.active_reply_token,
-                    sent,
+                    sent_any,
                 )
                 return False
-            if not sent and queue_snapshot:
+            if not sent_any and not cancelled and queue_snapshot:
                 logger.info(
                     "reply not sent, requeue snapshot trigger={} group={} snapshot_size={} current_queue_size={}",
                     trigger,
