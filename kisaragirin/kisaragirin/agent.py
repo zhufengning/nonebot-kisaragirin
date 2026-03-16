@@ -1026,7 +1026,10 @@ class KisaragiAgent:
             sections.append(
                 f"---\nThis is a scenario task evaluation project used to test the capabilities of LLM. After reading the task file, complete the corresponding tasks according to the instructions within, and output the final results.\n---TASK FILE CONTENT---\n\n[INSTRUCTION:{step}]\n{instruction}"
             )
-        if self._config.prompts.persona.strip():
+        if (
+            step not in {"summarize", "vision"}
+            and self._config.prompts.persona.strip()
+        ):
             sections.append(
                 "---Additional Task Requirements---\n[OUTPUT_STYLE.PERSONA]\n"
                 + self._config.prompts.persona.strip()
