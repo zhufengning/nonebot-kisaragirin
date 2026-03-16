@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from dataclasses import dataclass
 import hashlib
 import json
 import logging
@@ -10,6 +9,7 @@ import os
 import re
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 from threading import Lock, Thread
@@ -29,12 +29,25 @@ from .config import (
     OutputEvent,
 )
 from .memory import ShortTermMessage, SQLiteMemoryStore
-from .orchestration import StepImplementationRegistry
+from .orchestration import (
+    StepImplementationRegistry,
+    build_graph_for_execution_plan,
+    resolve_all_steps,
+)
 from .prompts import (
     ANIMATED_VISION_DESCRIPTION_PROMPT,
     STEP_SYSTEM_INSTRUCTIONS,
     URL_SUMMARY_PROMPT_TEMPLATE,
     VISION_DESCRIPTION_PROMPT,
+)
+from .routing import (
+    EMPTY_GRAPH,
+    ExecutionPlan,
+    RouteDecision,
+    build_default_route_decision,
+    build_execution_plan,
+    build_route_selection_plan,
+    normalize_route_ids,
 )
 from .steps_core import run_prepare
 from .steps_enrichment import (
@@ -50,19 +63,6 @@ from .steps_response import (
     run_reply_lite,
 )
 from .steps_routing import run_route
-from .orchestration import (
-    build_graph_for_execution_plan,
-    resolve_all_steps,
-)
-from .routing import (
-    EMPTY_GRAPH,
-    ExecutionPlan,
-    RouteDecision,
-    build_default_route_decision,
-    build_route_selection_plan,
-    build_execution_plan,
-    normalize_route_ids,
-)
 from .tools import build_default_tools
 
 # A practical URL matcher adapted from common "liberal" URL extraction patterns.
@@ -323,7 +323,9 @@ class KisaragiAgent:
         if route_decision is None:
             raise RuntimeError("missing route_decision in initial state")
         route_selection_plan = build_route_selection_plan(route_decision)
-        route_selection_graph = self._build_graph_for_execution_plan(route_selection_plan)
+        route_selection_graph = self._build_graph_for_execution_plan(
+            route_selection_plan
+        )
         state_after_route = route_selection_graph.invoke(initial_state)
         normalized_route_choices = list(
             normalize_route_ids(state_after_route.get("route_choices") or [])
@@ -591,7 +593,9 @@ class KisaragiAgent:
                 delivered_output_ids=delivered_output_ids,
             )
             if handle.finalize_plan.graph_spec.nodes:
-                finalize_graph = self._build_graph_for_execution_plan(handle.finalize_plan)
+                finalize_graph = self._build_graph_for_execution_plan(
+                    handle.finalize_plan
+                )
                 state = finalize_graph.invoke(state)
             run_started_at = state.get("run_started_at_monotonic")
             total_ms = 0.0
@@ -700,7 +704,10 @@ class KisaragiAgent:
 
             merged_result = dict(result)
             merged_result["step_durations_ms"] = merged_step_durations
-            if metric_name.startswith("reply") and "reply_completed_ms" not in merged_result:
+            if (
+                metric_name.startswith("reply")
+                and "reply_completed_ms" not in merged_result
+            ):
                 run_started_at = state.get("run_started_at_monotonic")
                 if isinstance(run_started_at, (int, float)):
                     merged_result["reply_completed_ms"] = (
@@ -953,7 +960,7 @@ class KisaragiAgent:
                 continue
             alias = url_to_alias.get(cleaned)
             if alias is None:
-                alias = f"[url-{next_index}]"
+                alias = KisaragiAgent._format_url_alias(next_index, cleaned)
                 next_index += 1
                 url_to_alias[cleaned] = alias
                 alias_to_url[alias] = cleaned
@@ -966,6 +973,13 @@ class KisaragiAgent:
             return text, alias_to_url
         parts.append(text[last_end:])
         return "".join(parts), alias_to_url
+
+    @staticmethod
+    def _format_url_alias(index: int, url: str) -> str:
+        preview = url[:40].replace("]", "%5D")
+        if len(url) > 40:
+            preview += "...(cut off)"
+        return f"[url-{index}|{preview}]"
 
     @staticmethod
     def _normalize_url_from_match(raw: str) -> str:
@@ -1026,10 +1040,7 @@ class KisaragiAgent:
             sections.append(
                 f"---\nThis is a scenario task evaluation project used to test the capabilities of LLM. After reading the task file, complete the corresponding tasks according to the instructions within, and output the final results.\n---TASK FILE CONTENT---\n\n[INSTRUCTION:{step}]\n{instruction}"
             )
-        if (
-            step not in {"summarize", "vision"}
-            and self._config.prompts.persona.strip()
-        ):
+        if step not in {"summarize", "vision"} and self._config.prompts.persona.strip():
             sections.append(
                 "---Additional Task Requirements---\n[OUTPUT_STYLE.PERSONA]\n"
                 + self._config.prompts.persona.strip()

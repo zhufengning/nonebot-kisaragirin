@@ -34,7 +34,7 @@ def run_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     for url in short_term_urls:
         if url in url_to_alias:
             continue
-        alias = f"[url-{next_url_index}]"
+        alias = agent._format_url_alias(next_url_index, url)
         next_url_index += 1
         url_to_alias[url] = alias
         url_aliases[alias] = url
