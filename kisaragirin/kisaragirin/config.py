@@ -48,6 +48,7 @@ class ImageInput:
     base64_data: str | None = None
     mime_type: str = "image/png"
     name: str | None = None
+    animation_frames: list["ImageInput"] = field(default_factory=list)
 
     def to_model_url(self) -> str:
         if self.url:
@@ -127,4 +128,3 @@ class ConversationResponse:
     reply: str = ""
     outputs: list[OutputEvent] = field(default_factory=list)
     cancelled: bool = False
-

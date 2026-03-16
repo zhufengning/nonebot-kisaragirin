@@ -12,6 +12,7 @@ dependencies = [
     "nonebot-adapter-telegram>=0.1.0b20",
     "nb-cli>=1.7.0",
     "openai>=2.21.0",
+    "pillow>=12.1.0",
     "kisaragirin",
 ]
 

@@ -17,6 +17,7 @@
 - 插件配置示例：复制 `zfnbot/plugins/kisaragirin_onebot/config.example.py` 为 `zfnbot/plugins/kisaragirin_onebot/config.py` 后修改。
 - 配置结构定义位于 `zfnbot/plugins/kisaragirin_onebot/config_schema.py`。
 - 实际运行配置位于 `zfnbot/plugins/kisaragirin_onebot/config.py`。
+- `image_max_upload_bytes` 用于限制单张图片传给模型前的最大字节数；超限时会自动压缩，压不进阈值则跳过该图片。
 
 ## 启动
 

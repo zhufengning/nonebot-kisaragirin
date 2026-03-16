@@ -146,6 +146,10 @@ URL_SUMMARY_PROMPT_TEMPLATE = (
 )
 
 VISION_DESCRIPTION_PROMPT = "Describe this image in detail for downstream reasoning."
+ANIMATED_VISION_DESCRIPTION_PROMPT = (
+    "These images are {frame_count} frames sampled in chronological order from one animated image. "
+    "Describe the animated image as a whole for downstream reasoning, including key visual changes across frames."
+)
 
 ROUTE_PROMPT = """你是一个路由器，需要根据输入中给出的路径描述，决定本轮消息应走哪些路径。
 只有INPUT-YAML部分是本轮输入消息，其余部分都是补充上下文；选路时你应当只参考 INPUT-YAML。

@@ -24,6 +24,7 @@ class PluginConfig:
     step_models: StepModelIds
     groups: dict[int, GroupConfig]
     short_term_turn_window: int = 12
+    image_max_upload_bytes: int = 4 * 1024 * 1024
     ops: tuple[int, ...] = ()
     exa_api_key: str = ""
     brave_search_api_key: str = ""

@@ -31,6 +31,7 @@ from .config import (
 from .memory import ShortTermMessage, SQLiteMemoryStore
 from .orchestration import StepImplementationRegistry
 from .prompts import (
+    ANIMATED_VISION_DESCRIPTION_PROMPT,
     STEP_SYSTEM_INSTRUCTIONS,
     URL_SUMMARY_PROMPT_TEMPLATE,
     VISION_DESCRIPTION_PROMPT,
@@ -777,23 +778,47 @@ class KisaragiAgent:
 
     def _describe_image(self, image: ImageInput) -> str:
         model = self._model(self._config.step_models.vision)
-        try:
-            image_url = image.to_model_url()
-        except Exception as exc:
-            return f"Image payload error: {exc}"
+        content: list[str | dict[str, object]] = []
+        animation_frames = list(image.animation_frames or [])
+        if animation_frames:
+            content.append(
+                {
+                    "type": "text",
+                    "text": ANIMATED_VISION_DESCRIPTION_PROMPT.format(
+                        frame_count=len(animation_frames)
+                    ),
+                }
+            )
+            for frame in animation_frames:
+                try:
+                    frame_url = frame.to_model_url()
+                except Exception as exc:
+                    return f"Animated image frame payload error: {exc}"
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": frame_url},
+                    }
+                )
+        else:
+            try:
+                image_url = image.to_model_url()
+            except Exception as exc:
+                return f"Image payload error: {exc}"
+            content.extend(
+                [
+                    {
+                        "type": "text",
+                        "text": VISION_DESCRIPTION_PROMPT,
+                    },
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ]
+            )
 
         msg = model.invoke(
             [
                 SystemMessage(content=self._system_prompt("vision")),
-                HumanMessage(
-                    content=[
-                        {
-                            "type": "text",
-                            "text": VISION_DESCRIPTION_PROMPT,
-                        },
-                        {"type": "image_url", "image_url": {"url": image_url}},
-                    ]
-                ),
+                HumanMessage(content=content),
             ]
         )
         return self._message_to_text(msg.content)
@@ -1238,5 +1263,3 @@ class KisaragiAgent:
         merged = dict(state.get("step_attachments", {}))
         merged[step] = value
         return merged
-
-

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import csv
+from io import BytesIO
 import mimetypes
 import re
 from pathlib import Path
@@ -12,7 +13,9 @@ import httpx
 from kisaragirin import ImageInput
 from nonebot import logger
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageSegment
+from PIL import Image, ImageOps, UnidentifiedImageError
 
+from .config import PLUGIN_CONFIG
 from .payload import MessageData, MessageSegmentData
 
 AT_TEXT_PATTERNS = (
@@ -20,7 +23,12 @@ AT_TEXT_PATTERNS = (
     re.compile(r"\[CQ:at,qq=(\d+)\]"),
 )
 MAX_REPLY_DEPTH = 4
+ANIMATED_IMAGE_SAMPLE_FRAMES = 5
+IMAGE_COMPRESSION_QUALITIES = (85, 75, 65, 55, 45, 35, 25)
+IMAGE_MIN_EDGE = 128
 _qq_face_id_to_name: dict[str, str] | None = None
+
+
 def _load_qq_face_map() -> dict[str, str]:
     path = Path(__file__).with_name("qq_faces.csv")
     mapping: dict[str, str] = {}
@@ -44,6 +52,7 @@ def _qq_face_name(face_id: str) -> str:
         _qq_face_id_to_name = _load_qq_face_map()
     return _qq_face_id_to_name.get(face_id, "")
 
+
 def _sender_name(event: GroupMessageEvent) -> str:
     sender = event.sender
     if sender:
@@ -66,6 +75,249 @@ def _sender_name_from_dict(sender: dict[str, Any], user_id: int) -> str:
     return str(user_id)
 
 
+def _normalize_image_name(image_name: str | None) -> str | None:
+    normalized = str(image_name or "").strip()
+    return normalized or None
+
+
+def _replace_image_extension(image_name: str | None, suffix: str) -> str | None:
+    normalized = _normalize_image_name(image_name)
+    if normalized is None:
+        return None
+    return f"{Path(normalized).stem}{suffix}"
+
+
+def _frame_image_name(
+    image_name: str | None,
+    *,
+    frame_number: int,
+    frame_count: int,
+) -> str | None:
+    normalized = _normalize_image_name(image_name)
+    suffix = f".frame-{frame_number}-of-{frame_count}.jpg"
+    if normalized is None:
+        return None
+    return _replace_image_extension(normalized, suffix)
+
+
+def _prepare_image_for_jpeg(image: Image.Image) -> Image.Image:
+    normalized = ImageOps.exif_transpose(image)
+    if "A" in normalized.getbands():
+        rgba_image = normalized.convert("RGBA")
+        background = Image.new("RGBA", rgba_image.size, (255, 255, 255, 255))
+        background.alpha_composite(rgba_image)
+        return background.convert("RGB")
+    if normalized.mode != "RGB":
+        return normalized.convert("RGB")
+    return normalized
+
+
+def _encode_jpeg(image: Image.Image, *, quality: int) -> bytes:
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=quality, optimize=True)
+    return buffer.getvalue()
+
+
+def _encode_image_to_limit(
+    image: Image.Image,
+    *,
+    image_name: str | None,
+    max_upload_bytes: int,
+) -> tuple[bytes, str, str | None] | None:
+    current = _prepare_image_for_jpeg(image)
+    if max_upload_bytes <= 0:
+        try:
+            encoded = _encode_jpeg(current, quality=IMAGE_COMPRESSION_QUALITIES[0])
+        except OSError:
+            logger.opt(exception=True).warning("image encode failed during compression")
+            return None
+        return encoded, "image/jpeg", _replace_image_extension(image_name, ".jpg")
+
+    while True:
+        for quality in IMAGE_COMPRESSION_QUALITIES:
+            try:
+                encoded = _encode_jpeg(current, quality=quality)
+            except OSError:
+                logger.opt(exception=True).warning("image encode failed during compression")
+                return None
+            if len(encoded) <= max_upload_bytes:
+                return encoded, "image/jpeg", _replace_image_extension(image_name, ".jpg")
+
+        width, height = current.size
+        if min(width, height) <= IMAGE_MIN_EDGE:
+            break
+        next_width = max(IMAGE_MIN_EDGE, int(width * 0.8))
+        next_height = max(IMAGE_MIN_EDGE, int(height * 0.8))
+        if next_width == width and next_height == height:
+            break
+        current = current.resize((next_width, next_height), Image.Resampling.LANCZOS)
+
+    return None
+
+
+def _compress_image_to_limit(
+    content: bytes,
+    *,
+    image_name: str | None,
+    max_upload_bytes: int,
+) -> tuple[bytes, str, str | None] | None:
+    try:
+        with Image.open(BytesIO(content)) as source:
+            try:
+                source.seek(0)
+            except EOFError:
+                pass
+            return _encode_image_to_limit(
+                source.copy(),
+                image_name=image_name,
+                max_upload_bytes=max_upload_bytes,
+            )
+    except (UnidentifiedImageError, OSError):
+        logger.opt(exception=True).warning("image decode failed during compression")
+        return None
+
+
+def _sample_animation_frame_indexes(total_frames: int, sample_count: int) -> list[int]:
+    if total_frames <= 0:
+        return []
+    if total_frames <= sample_count:
+        return list(range(total_frames))
+    if sample_count <= 1:
+        return [0]
+
+    selected: list[int] = []
+    last_index = total_frames - 1
+    for offset in range(sample_count):
+        frame_index = round(offset * last_index / (sample_count - 1))
+        if frame_index not in selected:
+            selected.append(frame_index)
+    if len(selected) >= sample_count:
+        return selected[:sample_count]
+
+    for frame_index in range(total_frames):
+        if frame_index in selected:
+            continue
+        selected.append(frame_index)
+        if len(selected) >= sample_count:
+            break
+    return selected
+
+
+def _extract_animated_frame_inputs(
+    content: bytes,
+    *,
+    image_name: str | None,
+) -> list[ImageInput] | None:
+    max_upload_bytes = max(0, int(PLUGIN_CONFIG.image_max_upload_bytes))
+    try:
+        with Image.open(BytesIO(content)) as source:
+            total_frames = int(getattr(source, "n_frames", 1) or 1)
+            is_animated = bool(getattr(source, "is_animated", False)) and total_frames > 1
+            if not is_animated:
+                return None
+
+            frame_indexes = _sample_animation_frame_indexes(
+                total_frames,
+                ANIMATED_IMAGE_SAMPLE_FRAMES,
+            )
+            frame_inputs: list[ImageInput] = []
+            for order, frame_index in enumerate(frame_indexes, start=1):
+                source.seek(frame_index)
+                encoded = _encode_image_to_limit(
+                    source.copy(),
+                    image_name=_frame_image_name(
+                        image_name,
+                        frame_number=order,
+                        frame_count=len(frame_indexes),
+                    ),
+                    max_upload_bytes=max_upload_bytes,
+                )
+                if encoded is None:
+                    return None
+                frame_content, frame_mime_type, frame_name = encoded
+                frame_inputs.append(
+                    ImageInput(
+                        base64_data=base64.b64encode(frame_content).decode("ascii"),
+                        mime_type=frame_mime_type,
+                        name=frame_name,
+                    )
+                )
+    except (UnidentifiedImageError, OSError, EOFError):
+        logger.opt(exception=True).warning("animated image frame extraction failed")
+        return None
+
+    if frame_inputs:
+        logger.info(
+            "animated image sampled frame_count={} sampled_count={} name={}",
+            total_frames,
+            len(frame_inputs),
+            image_name or "(unknown)",
+        )
+    return frame_inputs or None
+
+
+def _finalize_image_segment(
+    content: bytes,
+    *,
+    mime_type: str,
+    image_name: str | None,
+) -> MessageSegmentData | None:
+    max_upload_bytes = max(0, int(PLUGIN_CONFIG.image_max_upload_bytes))
+    normalized_name = _normalize_image_name(image_name)
+    animation_frames = _extract_animated_frame_inputs(
+        content,
+        image_name=normalized_name,
+    )
+    if animation_frames:
+        return MessageSegmentData(
+            type="image",
+            image_name=normalized_name,
+            image=ImageInput(
+                base64_data=base64.b64encode(content).decode("ascii"),
+                mime_type=mime_type,
+                name=normalized_name,
+                animation_frames=animation_frames,
+            ),
+        )
+
+    final_content = content
+    final_mime_type = mime_type
+    final_name = normalized_name
+
+    if max_upload_bytes > 0 and len(content) > max_upload_bytes:
+        compressed = _compress_image_to_limit(
+            content,
+            image_name=normalized_name,
+            max_upload_bytes=max_upload_bytes,
+        )
+        if compressed is None:
+            logger.warning(
+                "image exceeds max_upload_bytes and cannot be compressed within limit bytes={} limit={} name={}",
+                len(content),
+                max_upload_bytes,
+                normalized_name or "(unknown)",
+            )
+            return None
+        final_content, final_mime_type, final_name = compressed
+        logger.info(
+            "image compressed bytes_before={} bytes_after={} limit={} name={}",
+            len(content),
+            len(final_content),
+            max_upload_bytes,
+            final_name or normalized_name or "(unknown)",
+        )
+
+    return MessageSegmentData(
+        type="image",
+        image_name=final_name,
+        image=ImageInput(
+            base64_data=base64.b64encode(final_content).decode("ascii"),
+            mime_type=final_mime_type,
+            name=final_name,
+        ),
+    )
+
+
 def _image_input_from_data_uri(uri: str, image_name: str | None) -> MessageSegmentData | None:
     if not uri.startswith("data:"):
         return None
@@ -73,19 +325,16 @@ def _image_input_from_data_uri(uri: str, image_name: str | None) -> MessageSegme
         return None
     header, data = uri.split(",", 1)
     mime_type = header[5:].split(";", 1)[0].strip() or "image/png"
-    if ";base64" in header:
-        base64_data = data
-    else:
-        base64_data = base64.b64encode(unquote_to_bytes(data)).decode("ascii")
-    return MessageSegmentData(
-        type="image",
-        image_name=image_name,
-        image=ImageInput(
-            base64_data=base64_data,
-            mime_type=mime_type,
-            name=image_name,
-        ),
-    )
+    try:
+        content = (
+            base64.b64decode(data, validate=False)
+            if ";base64" in header
+            else unquote_to_bytes(data)
+        )
+    except Exception:
+        logger.warning("decode data uri image failed, skip one segment")
+        return None
+    return _finalize_image_segment(content, mime_type=mime_type, image_name=image_name)
 
 
 async def _image_segment_to_data(bot: Bot, segment: MessageSegment) -> MessageSegmentData | None:
@@ -144,15 +393,7 @@ async def _image_segment_to_data(bot: Bot, segment: MessageSegment) -> MessageSe
         guessed = mimetypes.guess_type(image_name or "")[0]
         mime_type = guessed if guessed and guessed.startswith("image/") else "image/png"
 
-    return MessageSegmentData(
-        type="image",
-        image_name=image_name,
-        image=ImageInput(
-            base64_data=base64.b64encode(content).decode("ascii"),
-            mime_type=mime_type,
-            name=image_name,
-        ),
-    )
+    return _finalize_image_segment(content, mime_type=mime_type, image_name=image_name)
 
 
 def _normalize_message_id(raw_message_id: Any) -> int | None:
@@ -592,6 +833,4 @@ async def _parse_message(
     ):
         parsed_segments.insert(0, prefixed_reply_segment)
     return parsed_segments, parsed_mentioned_bot, parsed_has_unknown
-
-
 

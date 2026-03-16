@@ -10,6 +10,7 @@ from zfnbot.plugins.kisaragirin_onebot.config_schema import (
 
 PLUGIN_CONFIG = PluginConfig(
     short_term_turn_window=12,
+    image_max_upload_bytes=4 * 1024 * 1024,
     debug=True,
     exa_api_key="",
     brave_search_api_key="",
@@ -61,5 +62,4 @@ PLUGIN_CONFIG = PluginConfig(
         ),
     },
 )
-
 
