@@ -15,6 +15,10 @@ class LiteReplyCheckResult:
 LiteReplyChecker = Callable[[str], LiteReplyCheckResult]
 
 
+def _parenthetical_action_rule_text() -> str:
+    return "- 注意：你的输出仅需要包含发送在qq群对话框中的对话信息，禁止添加任何动作、状态描述，尤其是放在括号里的小动作。"
+
+
 def _strip_leading_tone_words(text: str) -> tuple[str, int]:
     leading_tone_word_pattern = r"(?:哈+|啊|诶|哎|好家伙|呜+|前辈)"
     leading_tone_prefix_pattern = re.compile(
@@ -55,32 +59,52 @@ def check_reply_lite_opening_this(text: str) -> LiteReplyCheckResult:
 
 
 def check_reply_lite_parenthetical_blacklist(text: str) -> LiteReplyCheckResult:
-    parenthetical_action_rule_text = (
-        "- 注意：你的输出仅需要包含发送在qq群对话框中的对话信息，禁止添加任何动作、状态描述，尤其是放在括号里的小动作。"
+    parenthetical_action_rule_text = _parenthetical_action_rule_text()
+    blacklisted_parenthetical_keywords: tuple[str, ...] = (
+        "拍",
+        "递",
+        "捂",
+        "擦",
+        "晃",
+        "敲",
+        "挥",
+        "躲",
+        "低头",
+        "抬头",
+        "歪头",
+        "困惑",
+        "无辜",
+        "心虚",
+        "委屈",
+        "肩",
+        "脸",
+        "嘴",
+        "胸口",
+        "桌",
+        "手",
+        "认错",
+        "叹气",
+        "拍肩",
+        "递零食",
+        "递奶茶",
+        "递咖啡",
+        "困惑脸",
+        "捂脸",
+        "小声",
+        "跺"
     )
-    blacklisted_parenthetical_phrases: tuple[str, ...] = (
-        "（拍肩）",
-        "(拍肩)",
-        "（递零食）",
-        "(递零食)",
-        "（递奶茶）",
-        "(递奶茶)",
-        "（递咖啡）",
-        "(递咖啡)",
-        "（困惑脸）",
-        "(困惑脸)",
-        "（捂脸）",
-        "(捂脸)",
-        "（小声）",
-        "(小声)",
-    )
-    first_match: tuple[int, str] | None = None
-    for phrase in blacklisted_parenthetical_phrases:
-        position = text.find(phrase)
-        if position < 0:
+    parenthetical_segment_pattern = re.compile(r"（([^（）]{1,16})）|\(([^()]{1,16})\)")
+    first_match: tuple[int, str, str] | None = None
+    for match in parenthetical_segment_pattern.finditer(text):
+        content = match.group(1) or match.group(2) or ""
+        if not content:
             continue
-        if first_match is None or position < first_match[0]:
-            first_match = (position, phrase)
+        for keyword in blacklisted_parenthetical_keywords:
+            if keyword not in content:
+                continue
+            if first_match is None or match.start() < first_match[0]:
+                first_match = (match.start(), match.group(0), keyword)
+            break
 
     if first_match is None:
         return LiteReplyCheckResult(
@@ -88,9 +112,9 @@ def check_reply_lite_parenthetical_blacklist(text: str) -> LiteReplyCheckResult:
             passed=True,
         )
 
-    offset, phrase = first_match
+    offset, phrase, keyword = first_match
     diagnostics = (
-        f"error[LITE002]: 第{offset + 1}个字附近出现黑名单表达“{phrase}”\n"
+        f"error[LITE002]: 第{offset + 1}个字附近出现黑名单括号表达“{phrase}”，命中关键词“{keyword}”\n"
         "原因：\n"
         f"{parenthetical_action_rule_text}"
     )
@@ -101,113 +125,26 @@ def check_reply_lite_parenthetical_blacklist(text: str) -> LiteReplyCheckResult:
     )
 
 
-def _is_high_confidence_parenthetical_match(text: str, start: int, end: int, content: str) -> bool:
-    high_confidence_parenthetical_token_blacklist: tuple[str, ...] = (
-        "拍",
-        "递",
-        "捂",
-        "擦",
-        "晃",
-        "敲",
-        "挥",
-        "低头",
-        "抬头",
-        "歪头",
-        "小声",
-        "困惑",
-        "无辜",
-        "心虚",
-        "委屈",
-        "肩",
-        "脸",
-        "嘴",
-        "胸口",
-        "桌",
-        "手",
-        "认错",
-        "叹气",
+def check_reply_lite_sentence_final_parenthetical(text: str) -> LiteReplyCheckResult:
+    parenthetical_action_rule_text = _parenthetical_action_rule_text()
+    sentence_final_parenthetical_pattern = re.compile(
+        r"（[^（）]{1,16}）(?=[ \t]*(?:$|\n))|\([^()]{1,16}\)(?=[ \t]*(?:$|\n))"
     )
-    parenthetical_safe_non_english_pattern = re.compile(
-        r"[0-9%/+._:@#-]|https?://|www\."
-    )
-    parenthetical_pure_english_pattern = re.compile(r"^[A-Za-z][A-Za-z\s]{0,7}$")
-    parenthetical_left_context_allowed = "，。！？；：、,.!?\n"
-    if parenthetical_safe_non_english_pattern.search(content):
-        return False
-    if parenthetical_pure_english_pattern.fullmatch(content):
-        return False
-    if not any(token in content for token in high_confidence_parenthetical_token_blacklist):
-        return False
-
-    left_context = text[:start].rstrip()
-    right_context = text[end:].lstrip()
-
-    left_ok = not left_context or left_context[-1] in parenthetical_left_context_allowed
-    right_ok = not right_context or right_context[0] in parenthetical_left_context_allowed
-    return left_ok or right_ok
-
-
-def check_reply_lite_parenthetical_token_blacklist(text: str) -> LiteReplyCheckResult:
-    parenthetical_action_rule_text = (
-        "- 注意：你的输出仅需要包含发送在qq群对话框中的对话信息，禁止添加任何动作、状态描述，尤其是放在括号里的小动作。"
-    )
-    high_confidence_parenthetical_token_blacklist: tuple[str, ...] = (
-        "拍",
-        "递",
-        "捂",
-        "擦",
-        "晃",
-        "敲",
-        "挥",
-        "低头",
-        "抬头",
-        "歪头",
-        "小声",
-        "困惑",
-        "无辜",
-        "心虚",
-        "委屈",
-        "肩",
-        "脸",
-        "嘴",
-        "胸口",
-        "桌",
-        "手",
-        "认错",
-        "叹气",
-    )
-    parenthetical_segment_pattern = re.compile(r"（([^（）]{2,8})）|\(([^()]{2,8})\)")
-    for match in parenthetical_segment_pattern.finditer(text):
-        content = match.group(1) or match.group(2) or ""
-        if not content:
-            continue
-        if not _is_high_confidence_parenthetical_match(
-            text,
-            match.start(),
-            match.end(),
-            content,
-        ):
-            continue
-
-        matched_token = next(
-            token
-            for token in high_confidence_parenthetical_token_blacklist
-            if token in content
-        )
+    for match in sentence_final_parenthetical_pattern.finditer(text):
         diagnostics = (
-            f"error[LITE003]: 第{match.start() + 1}个字附近出现高风险括号表达“{match.group(0)}”，"
-            f"命中词典词“{matched_token}”\n"
+            f"error[LITE003]: 第{match.start() + 1}个字附近出现句尾括号表达“{match.group(0)}”\n"
             "原因：\n"
-            f"{parenthetical_action_rule_text}"
+            f"{parenthetical_action_rule_text}\n"
+            "如果你确实需要使用括号来对内容进行补充、解释，请在括号后补一个句号或其他标点。"
         )
         return LiteReplyCheckResult(
-            checker_name="parenthetical_token_blacklist",
+            checker_name="sentence_final_parenthetical",
             passed=False,
             diagnostics=diagnostics,
         )
 
     return LiteReplyCheckResult(
-        checker_name="parenthetical_token_blacklist",
+        checker_name="sentence_final_parenthetical",
         passed=True,
     )
 
@@ -215,5 +152,5 @@ def check_reply_lite_parenthetical_token_blacklist(text: str) -> LiteReplyCheckR
 DEFAULT_LITE_REPLY_CHECKERS: tuple[LiteReplyChecker, ...] = (
     check_reply_lite_opening_this,
     check_reply_lite_parenthetical_blacklist,
-    check_reply_lite_parenthetical_token_blacklist,
+    check_reply_lite_sentence_final_parenthetical,
 )
