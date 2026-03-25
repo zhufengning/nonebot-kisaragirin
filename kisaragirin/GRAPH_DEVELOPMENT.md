@@ -218,6 +218,7 @@ GraphSpec(
 当前仓库里的 `route` 节点会使用 `step_models.route` 指定的轻量模型，根据输入里给出的路径描述输出一个 route id 数组；判断完成后，Agent 会按数组顺序装配对应的独立路径图继续执行。数组允许为空，表示整轮选择沉默。
 
 注意：`lite_chat` 路径虽然跳过工具调用，但回复节点会优先使用 `step_models.lite_reply`；若未配置，则回退到 `step_models.reply`。
+另外，当前 `lite_chat` 路径不是单个 `reply_lite` 节点，而是展开成最多三轮 `reply_lite -> reply_lite_check` 的无环图。检查失败时，会把评语附在上一版回复末尾交给下一轮 `reply_lite` 重写；第三轮仍失败则直接结束，不产生输出事件。当前已接入的检查函数既包括“去掉句首语气词后禁止以‘这’开头”，也包括基于黑名单和高置信模板的括号动作/状态短语拦截。
 
 ### 3.6 收尾闸门
 
@@ -246,6 +247,8 @@ GraphSpec(
 2. 若是，就用 `reply_step_metadata(...)` 把它注册成 reply 类节点
 
 如果一条执行路径里没有任何 reply 类节点，它就不会产生输出事件。
+
+注意：`reply_lite_check` 这类“审核/改写驱动节点”不应注册成 reply 类节点。真正对外产出的仍然只有 `reply_lite_*` 节点，检查节点只负责写条件键、评语和日志。
 
 ## 5. 如何新增一个新节点：推荐步骤
 
@@ -357,5 +360,3 @@ GraphNodeSpec(node_id="planner", phase="planner")
 - 通用循环控制（虽然底层可由条件边 + 回边表达）
 
 后续如果要加这些能力，建议继续在 `GraphSpec` 和 `orchestration.py` 层扩展，而不要把逻辑重新塞回 `agent.py`。
-
-

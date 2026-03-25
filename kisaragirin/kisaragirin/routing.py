@@ -82,11 +82,55 @@ DEFAULT_ROUTE_GRAPH = GraphSpec(
 
 LITE_CHAT_ROUTE_GRAPH = GraphSpec(
     nodes=(
-        GraphNodeSpec(node_id="reply_lite", phase="reply", variant="lite"),
+        GraphNodeSpec(node_id="reply_lite_1", phase="reply", variant="lite"),
+        GraphNodeSpec(node_id="reply_lite_check_1", phase="reply_lite_check"),
+        GraphNodeSpec(node_id="reply_lite_2", phase="reply", variant="lite"),
+        GraphNodeSpec(node_id="reply_lite_check_2", phase="reply_lite_check"),
+        GraphNodeSpec(node_id="reply_lite_3", phase="reply", variant="lite"),
+        GraphNodeSpec(node_id="reply_lite_check_3", phase="reply_lite_check"),
     ),
-    edges=(),
-    entry_node_ids=("reply_lite",),
-    exit_node_ids=("reply_lite",),
+    edges=(
+        ("reply_lite_1", "reply_lite_check_1"),
+        ("reply_lite_2", "reply_lite_check_2"),
+        ("reply_lite_3", "reply_lite_check_3"),
+    ),
+    entry_node_ids=("reply_lite_1",),
+    exit_node_ids=(
+        "reply_lite_check_1",
+        "reply_lite_check_2",
+        "reply_lite_check_3",
+    ),
+    conditional_edges=(
+        ConditionalEdgeSpec(
+            source_node_id="reply_lite_check_1",
+            condition_key="reply_lite_check_result",
+            branches={
+                "retry": "reply_lite_2",
+                "pass": END_TARGET,
+                "cancel": END_TARGET,
+            },
+            default_target_node_id=END_TARGET,
+        ),
+        ConditionalEdgeSpec(
+            source_node_id="reply_lite_check_2",
+            condition_key="reply_lite_check_result",
+            branches={
+                "retry": "reply_lite_3",
+                "pass": END_TARGET,
+                "cancel": END_TARGET,
+            },
+            default_target_node_id=END_TARGET,
+        ),
+        ConditionalEdgeSpec(
+            source_node_id="reply_lite_check_3",
+            condition_key="reply_lite_check_result",
+            branches={
+                "pass": END_TARGET,
+                "cancel": END_TARGET,
+            },
+            default_target_node_id=END_TARGET,
+        ),
+    ),
 )
 
 

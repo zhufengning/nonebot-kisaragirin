@@ -60,6 +60,7 @@ from .steps_response import (
     run_memory,
     run_memory_gate,
     run_reply,
+    run_reply_lite_check,
     run_reply_lite,
 )
 from .steps_routing import run_route
@@ -141,6 +142,9 @@ class AgentState(TypedDict, total=False):
     short_term_context: str
     working_text: str
     reply: str
+    reply_lite_attempt: int
+    reply_lite_check_result: str
+    reply_lite_retry_feedback: str
     output_events: list[OutputEvent]
     delivered_outputs: list[OutputEvent]
     reply_completed_ms: float
@@ -525,6 +529,9 @@ class KisaragiAgent:
             "reply": {
                 "default": lambda state: run_reply(self, state),
                 "lite": lambda state: run_reply_lite(self, state),
+            },
+            "reply_lite_check": {
+                "default": lambda state: run_reply_lite_check(self, state),
             },
             "memory_gate": {
                 "default": lambda state: run_memory_gate(self, state),

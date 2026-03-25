@@ -58,6 +58,9 @@ DEFAULT_STEP_METADATA: dict[str, dict[str, StepMetadata]] = {
         "default": reply_step_metadata("reply", "reply"),
         "lite": reply_step_metadata("reply_lite", "reply_lite"),
     },
+    "reply_lite_check": {
+        "default": StepMetadata("reply_lite_check", "reply_lite_check"),
+    },
     "memory_gate": {
         "default": StepMetadata("memory_gate", "memory_gate"),
     },

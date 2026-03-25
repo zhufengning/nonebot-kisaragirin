@@ -34,9 +34,10 @@
 - `kisaragirin/kisaragirin/routing.py`：RouteDecision、ExecutionPlan、GraphSpec、ConditionalEdgeSpec 等路由与图规格骨架。
 - `kisaragirin/kisaragirin/orchestration.py`：步骤元数据、步骤解析与图装配公共逻辑。
 - `kisaragirin/kisaragirin/steps_core.py`：已抽离的核心节点实现（当前包含 `prepare`）。
-- `kisaragirin/kisaragirin/steps_response.py`：已抽离的回复与记忆节点实现（当前包含 `reply`、`reply_lite`、`memory_gate`、`memory`）。
+- `kisaragirin/kisaragirin/steps_response.py`：已抽离的回复与记忆节点实现（当前包含 `reply`、`reply_lite`、`reply_lite_check`、`memory_gate`、`memory`）。
 - `kisaragirin/kisaragirin/steps_enrichment.py`：已抽离的增强型节点实现（当前包含 `url`、`vision`、`enrich_merge`、`tools`）。
 - `kisaragirin/kisaragirin/steps_routing.py`：路由 step 实现（当前包含 `route`）。
+- `kisaragirin/kisaragirin/reply_lite_checks.py`：`reply_lite_check` 节点使用的用语检查函数、评语拼装与规则复用。
 - `kisaragirin/kisaragirin/tools.py`：内置工具（`read_url`、可选 `exa_search`、可选 `web_search`〔优先 Exa，回退 Brave〕、可选 `scholar_search`）。
 - `kisaragirin/kisaragirin/memory.py`：SQLite 记忆与缓存存储。
 - `kisaragirin/kisaragirin/prompts.py`：各步骤提示词文本。
@@ -56,8 +57,13 @@
   - 开始回复时先将当前队列快照并出队（后续新消息不影响本轮）。
   - 共享前段中，URL 总结与图片描述会并行执行，再汇总进入路由。
 - 路由阶段使用 `step_models.route` 指定的轻量模型输出路径数组；技术提问、技术文章分享、技术讨论、事实求证、需要工具或分析的内容进入 `default`，情绪化吐槽、闲聊、接梗等进入 `lite_chat`。同一轮消息可同时命中两条路径，随后按数组顺序分别装配对应的独立路径图。`lite_chat` 路径跳过工具调用，并优先使用 `step_models.lite_reply`；若未配置则回退到 `step_models.reply`。
+- `lite_chat` 路径内部不是单个 `reply_lite` 节点，而是最多三轮 `reply_lite -> reply_lite_check` 串联。检查节点会依次运行用语检查函数；若某轮未通过，会把全部评语追加到上一版回复末尾，要求 `reply_lite` 重新生成；第三次仍未通过则整条路径取消回复。
 - `reply` / `reply_lite` 会先产出路径级回复事件；路径若输出 `bot选择沉默`，则该路径不对外发送。
-- 全部路径执行完成后，插件按顺序逐条发送非沉默回复；只有发送成功的路径回复才会在共享 `memory` 收尾阶段一起写回记忆。
+- 评语是 `reply_lite_check` 产出的编译器风格诊断文本：先定位错误位置，再引用 prompt 中的规则原文说明原因。当前检查器包括：
+  - 忽略句首常见语气词（如 `哈*`、`呜*`、`啊`、`诶`、`哎`、`好家伙`、`前辈`）及其后的 `，！。？`，然后检查是否以“这”开头。
+  - 用黑名单拦截括号里的动作/状态短语（当前包括 `（拍肩）`、`（递零食）`、`（递奶茶）`、`（递咖啡）`、`（困惑脸）`、`（捂脸）`、`（小声）` 及其半角括号版本），暂不泛化到所有括号内容。
+  - 用高置信模板拦截短括号表达：只看 `（...）` / `(...)` 内 2 到 8 个字、位置接近句尾或独立成分、且不含数字/英文/链接等明显安全特征；只要内容命中动作/状态词典中的任一词，就直接判违规，不做词典组合。
+- 全部路径执行完成后，插件按顺序逐条发送非沉默回复；只有发送成功的路径回复才会在共享 `memory` 收尾阶段一起写回记忆。`reply_lite` 的中间草稿与检查评语不会写入短期记忆，短期记忆只记录最终实际发送的回复。
   - 在 `memory` 完成前，当前群仍保持 replying 状态，下一次回复触发会继续等待/跳过。
   - 若整轮都沉默，不会回灌队列。
   - 若尚未发送任何回复就失败，会把快照消息回灌队列，避免丢消息。
@@ -74,7 +80,8 @@
 - `route`：判断进入哪些路径（可为空、可多选）。
 - `tools`：按需调用工具补充信息（仅 `default` 路径）。
 - `reply`：生成技术路径回复文本，只处理技术相关输入，输出技术性内容，长度不超过 150 字；输出 `bot选择沉默` 时取消该路径回复。
-- `reply_lite`：生成休闲路径回复文本，只处理休闲/情绪化输入；输出 `bot选择沉默` 时取消该路径回复。
+- `reply_lite`：生成休闲路径回复文本，只处理休闲/情绪化输入；若收到上一轮检查评语，会基于“上一版回复 + 评语”重写；输出 `bot选择沉默` 时取消该路径回复。
+- `reply_lite_check`：顺序执行用语检查函数，写出是否通过与评语；若失败则驱动下一轮 `reply_lite` 重写，连续 3 次失败后取消该路径回复，并记录检查日志。
 - `memory_gate`：根据回复发送结果决定是否进入记忆写回。
 - `memory`：在全部路径结束后，写回长期记忆与短期记忆（user+assistant），并合并本轮所有成功发送的路径回复。
 
@@ -103,6 +110,7 @@
 
 - `bot.py` 自定义了日志过滤：`kisaragirin*` 与 `zfnbot*` 默认 DEBUG，其它模块（含 nonebot）默认 WARNING。
 - 打开 `PLUGIN_CONFIG.debug=True` 后，Agent 的 step 调试内容会通过 `kisaragirin.agent` 日志输出。
+- `reply_lite_check` 无论 `debug` 是否开启，都会输出 `LITE-CHECK` 信息日志，记录 attempt、检查器名、通过/失败结果；失败时会附带完整评语。
 - 每次完整回复结束后，`kisaragirin.agent` 会统一输出一条性能日志，包含实际运行节点的耗时、`reply_total`（回复产出完成耗时）与 `total`（整轮完成总耗时）。
 
 ## 运行方式（本地）
