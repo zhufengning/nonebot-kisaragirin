@@ -1133,7 +1133,15 @@ class KisaragiAgent:
         if not messages:
             return "(empty)"
         if message_format == "simple":
+            blocks: list[str] = []
             merged_messages: list[dict[str, object]] = []
+
+            def _flush_merged_messages() -> None:
+                if not merged_messages:
+                    return
+                blocks.append(KisaragiAgent._render_simple_payload(list(merged_messages)))
+                merged_messages.clear()
+
             for item in messages:
                 content = KisaragiAgent._replace_legacy_image_hash_aliases(
                     item.content,
@@ -1155,17 +1163,17 @@ class KisaragiAgent:
                         content,
                         url_to_alias=short_term_url_to_alias,
                     )
-                merged_messages.extend(
-                    KisaragiAgent._stored_payload_messages(
-                        role=item.role,
-                        content=content,
-                        created_at=item.created_at,
-                        self_name=self_name,
-                    )
-                )
-            if not merged_messages:
+                payload_messages = KisaragiAgent._stored_payload_messages(content)
+                if payload_messages:
+                    merged_messages.extend(payload_messages)
+                    continue
+                _flush_merged_messages()
+                if content.strip():
+                    blocks.append(content)
+            _flush_merged_messages()
+            if not blocks:
                 return "(empty)"
-            return KisaragiAgent._render_simple_payload(merged_messages)
+            return "\n\n".join(block for block in blocks if block.strip())
         blocks: list[str] = []
         for item in messages:
             content = KisaragiAgent._replace_legacy_image_hash_aliases(
@@ -1199,21 +1207,10 @@ class KisaragiAgent:
         return "\n\n".join(block for block in blocks if block.strip())
 
     @staticmethod
-    def _stored_payload_messages(
-        *,
-        role: str,
-        content: str,
-        created_at: float,
-        self_name: str,
-    ) -> list[dict[str, object]]:
+    def _stored_payload_messages(content: str) -> list[dict[str, object]]:
         payload = KisaragiAgent._try_parse_stored_message_payload(content)
         if payload is None:
-            payload = KisaragiAgent._build_virtual_message_payload(
-                role=role,
-                content=content,
-                created_at=created_at,
-                self_name=self_name,
-            )
+            return []
         messages = payload.get("messages")
         if not isinstance(messages, list):
             return []
@@ -1242,7 +1239,6 @@ class KisaragiAgent:
                 content=content,
                 created_at=created_at,
                 role=role,
-                force_structured=True,
                 message_format=message_format,
                 self_name=self_name,
             )
@@ -1254,18 +1250,10 @@ class KisaragiAgent:
         content: str,
         created_at: float,
         role: str,
-        force_structured: bool = False,
         message_format: str = "simple",
         self_name: str = "assistant",
     ) -> str:
         payload = KisaragiAgent._try_parse_stored_message_payload(content)
-        if payload is None and force_structured:
-            payload = KisaragiAgent._build_virtual_message_payload(
-                role=role,
-                content=content,
-                created_at=created_at,
-                self_name=self_name,
-            )
         if payload is None:
             return content
         if message_format == "simple":
@@ -1295,43 +1283,6 @@ class KisaragiAgent:
         if not isinstance(messages, list):
             return None
         return cast(dict[str, object], loaded)
-
-    @staticmethod
-    def _build_virtual_message_payload(
-        *,
-        role: str,
-        content: str,
-        created_at: float,
-        self_name: str = "assistant",
-    ) -> dict[str, object]:
-        sender_name = self_name if role == "assistant" else role
-        sender_id = "assistant" if role == "assistant" else role
-        return {
-            "schema_version": 1,
-            "platform": "short_term_memory",
-            "conversation": {
-                "id": "(memory)",
-                "type": "short_term",
-            },
-            "messages": [
-                {
-                    "message_id": f"{role}-{created_at}",
-                    "sent_at_local": datetime.fromtimestamp(created_at).astimezone().isoformat(),
-                    "sender": {
-                        "id": sender_id,
-                        "name": sender_name,
-                        "is_me": role == "assistant",
-                    },
-                    "mentioned_bot": False,
-                    "segments": [
-                        {
-                            "type": "text",
-                            "text": str(content or ""),
-                        }
-                    ],
-                }
-            ],
-        }
 
     @staticmethod
     def _render_simple_payload(messages: list[dict[str, object]]) -> str:
