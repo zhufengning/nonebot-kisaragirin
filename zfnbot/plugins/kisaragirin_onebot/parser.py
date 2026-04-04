@@ -699,58 +699,12 @@ async def _parse_message(
     mentioned_bot = bool(event.is_tome())
     raw_message = str(getattr(event, "raw_message", "") or "")
     message_for_parse = _coerce_to_message(getattr(event, "original_message", event.message))
-    plaintext = ""
-    extract_plaintext = ""
-    try:
-        get_plaintext = getattr(event, "get_plaintext", None)
-        if callable(get_plaintext):
-            plaintext = str(get_plaintext() or "")
-    except Exception:
-        plaintext = ""
-    try:
-        extract_plaintext = str(event.message.extract_plain_text() or "")
-    except Exception:
-        extract_plaintext = ""
-    try:
-        segment_types = [f"{idx}:{seg.type}" for idx, seg in enumerate(event.message, start=1)]
-    except Exception:
-        segment_types = []
-    try:
-        original_message_obj = getattr(event, "original_message", None)
-        original_segment_types = (
-            [f"{idx}:{seg.type}" for idx, seg in enumerate(original_message_obj, start=1)]
-            if isinstance(original_message_obj, Message)
-            else []
-        )
-    except Exception:
-        original_segment_types = []
     logger.debug(
         "message meta group={} message_id={} to_me={} raw_message={}",
         event.group_id,
         event.message_id,
         mentioned_bot,
         raw_message,
-    )
-    logger.info(
-        "incoming segments group={} message_id={} segment_types={}",
-        event.group_id,
-        event.message_id,
-        segment_types,
-    )
-    if original_segment_types:
-        logger.info(
-            "incoming original_message segments group={} message_id={} original_segment_types={}",
-            event.group_id,
-            event.message_id,
-            original_segment_types,
-        )
-    logger.info(
-        "incoming text views group={} message_id={} raw_message={} get_plaintext={} extract_plain_text={}",
-        event.group_id,
-        event.message_id,
-        raw_message,
-        plaintext,
-        extract_plaintext,
     )
     if mentioned_bot:
         logger.info(
@@ -833,4 +787,3 @@ async def _parse_message(
     ):
         parsed_segments.insert(0, prefixed_reply_segment)
     return parsed_segments, parsed_mentioned_bot, parsed_has_unknown
-

@@ -11,6 +11,36 @@ from .scheduler import _refresh_workers
 from .state import QueuedMessage, _get_group_state, next_queue_sequence
 
 
+async def _bot_display_name(bot: Bot, group_id: int) -> str:
+    user_id = int(str(bot.self_id))
+    try:
+        info = await bot.get_group_member_info(group_id=group_id, user_id=user_id)
+        if isinstance(info, dict):
+            card = str(info.get("card") or "").strip()
+            nickname = str(info.get("nickname") or "").strip()
+            if card or nickname:
+                return card or nickname
+    except Exception:
+        logger.opt(exception=True).debug(
+            "get_group_member_info failed for bot group={} bot_id={}",
+            group_id,
+            bot.self_id,
+        )
+    try:
+        info = await bot.get_login_info()
+        if isinstance(info, dict):
+            nickname = str(info.get("nickname") or "").strip()
+            if nickname:
+                return nickname
+    except Exception:
+        logger.opt(exception=True).debug(
+            "get_login_info failed for bot group={} bot_id={}",
+            group_id,
+            bot.self_id,
+        )
+    return str(bot.self_id)
+
+
 async def handle_group_message_event(bot: Bot, event: MessageEvent) -> None:
     if not isinstance(event, GroupMessageEvent):
         return
@@ -53,6 +83,9 @@ async def handle_group_message_event(bot: Bot, event: MessageEvent) -> None:
         ),
     )
     state = _get_group_state(group_id)
+    bot_name = state.bot_name
+    if not bot_name or state.bot_id != runtime_bot_id:
+        bot_name = await _bot_display_name(bot, group_id)
     async with state.lock:
         current_bot_id = runtime_bot_id
         if state.bot_id != current_bot_id:
@@ -63,6 +96,7 @@ async def handle_group_message_event(bot: Bot, event: MessageEvent) -> None:
                 state.bot_id or "(none)",
             )
         state.bot_id = current_bot_id
+        state.bot_name = bot_name
         state.last_message_at = queued.created_at
         state.queue_version += 1
         state.queue.append(queued)

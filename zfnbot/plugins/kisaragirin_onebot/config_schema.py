@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 from kisaragirin import CrawlerConfig, ModelConfig, StepModelIds
+
+MessageFormat = Literal["yaml", "simple"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -23,6 +26,7 @@ class PluginConfig:
     models: tuple[ModelConfig, ...]
     step_models: StepModelIds
     groups: dict[int, GroupConfig]
+    message_format: MessageFormat = "yaml"
     short_term_turn_window: int = 12
     image_max_upload_bytes: int = 4 * 1024 * 1024
     ops: tuple[int, ...] = ()

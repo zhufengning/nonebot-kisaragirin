@@ -10,16 +10,18 @@ import re
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from importlib import import_module
 from pathlib import Path
 from threading import Lock, Thread
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, TypedDict, cast
 from urllib.parse import unquote_to_bytes, urlsplit
 
 from crawl4ai import BrowserConfig
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
+import yaml
 
 from .config import (
     AgentConfig,
@@ -91,6 +93,7 @@ URL_PATTERN = re.compile(
 )
 LEGACY_IMAGE_SHA256_PATTERN = re.compile(r"\[image-sha256:([0-9a-fA-F]{64})\]")
 IMAGE_ALIAS_PATTERN = re.compile(r"\[image-(\d+)\]")
+SIMPLE_TIME_GAP_SECONDS = 3 * 60
 
 _CONVERSATION_LOCKS: dict[str, Lock] = {}
 _CONVERSATION_LOCKS_GUARD = Lock()
@@ -118,6 +121,7 @@ class AgentState(TypedDict, total=False):
     conversation_id: str
     run_started_at_monotonic: float
     user_message: str
+    user_storage_message: str
     user_message_normalized: str
     images: list[ImageInput]
     assistant_reply_sent: bool
@@ -285,6 +289,7 @@ class KisaragiAgent:
             "conversation_id": request.conversation_id,
             "run_started_at_monotonic": time.perf_counter(),
             "user_message": request.message,
+            "user_storage_message": request.storage_message or request.message,
             "images": list(request.images),
             "assistant_reply_sent": True,
             "working_text_base": "",
@@ -646,6 +651,9 @@ class KisaragiAgent:
         with conversation_lock:
             self._memory_store.clear_long_term(conversation_id)
 
+    def set_self_name(self, self_name: str) -> None:
+        self._config.self_name = str(self_name or "").strip() or "assistant"
+
     def close(self) -> None:
         with self._close_lock:
             if self._closed:
@@ -896,6 +904,52 @@ class KisaragiAgent:
             "[DEBUG][%s][conversation=%s]\n%s", step, conversation_id, content
         )
 
+    def _log_model_messages(
+        self,
+        state: AgentState,
+        step: str,
+        messages: Sequence[BaseMessage],
+    ) -> None:
+        if not bool(state.get("debug")):
+            return
+        conversation_id = str(state.get("conversation_id", "?"))
+        rendered = self._render_debug_messages(messages)
+        self._log_info(
+            "[DEBUG][%s.llm_input][conversation=%s]\n%s",
+            step,
+            conversation_id,
+            rendered,
+        )
+
+    def _render_debug_messages(self, messages: Sequence[BaseMessage]) -> str:
+        blocks: list[str] = []
+        for index, message in enumerate(messages, start=1):
+            blocks.append(self._render_debug_message(index, message))
+        return "\n\n".join(blocks)
+
+    def _render_debug_message(self, index: int, message: BaseMessage) -> str:
+        role = str(getattr(message, "type", message.__class__.__name__)).upper()
+        content = self._render_debug_content(getattr(message, "content", ""))
+        _ = index
+        blocks = [f"[{role}]", content]
+        if isinstance(message, AIMessage) and message.tool_calls:
+            blocks.append("[TOOL-CALLS]")
+            blocks.append(json.dumps(message.tool_calls, ensure_ascii=False, indent=2))
+        if isinstance(message, ToolMessage):
+            blocks.append("[TOOL-NAME]")
+            blocks.append(str(getattr(message, "name", "") or "(unknown)"))
+            blocks.append("[TOOL-CALL-ID]")
+            blocks.append(str(getattr(message, "tool_call_id", "") or "(unknown)"))
+        return "\n".join(blocks)
+
+    def _render_debug_content(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        try:
+            return json.dumps(content, ensure_ascii=False, indent=2)
+        except TypeError:
+            return self._message_to_text(content)
+
     def _log_performance_report(
         self,
         *,
@@ -904,21 +958,7 @@ class KisaragiAgent:
         reply_completed_ms: float | None,
         total_ms: float,
     ) -> None:
-        durations = step_durations_ms if isinstance(step_durations_ms, dict) else {}
-        parts: list[str] = []
-        for step_name, value in durations.items():
-            if isinstance(value, (int, float)):
-                parts.append(f"{step_name}={float(value):.2f}ms")
-        metrics: list[str] = []
-        if isinstance(reply_completed_ms, (int, float)):
-            metrics.append(f"reply_total={float(reply_completed_ms):.2f}ms")
-        metrics.append(f"total={total_ms:.2f}ms")
-        metrics.extend(parts)
-        self._log_info(
-            "[PERF][conversation=%s] %s",
-            conversation_id,
-            " ".join(metrics),
-        )
+        return
 
     def _log_info(self, fmt: str, *args: Any) -> None:
         message = fmt % args if args else fmt
@@ -1084,14 +1124,50 @@ class KisaragiAgent:
     def _format_short_term_context(
         messages: list[ShortTermMessage],
         *,
+        message_format: str = "yaml",
+        self_name: str = "assistant",
         short_term_image_refs: dict[float, dict[int, str]] | None = None,
         short_term_hash_to_alias: dict[str, str] | None = None,
         short_term_url_to_alias: dict[str, str] | None = None,
     ) -> str:
         if not messages:
             return "(empty)"
-        lines = []
-        for idx, item in enumerate(messages, start=1):
+        if message_format == "simple":
+            merged_messages: list[dict[str, object]] = []
+            for item in messages:
+                content = KisaragiAgent._replace_legacy_image_hash_aliases(
+                    item.content,
+                    hash_to_alias=short_term_hash_to_alias,
+                )
+                refs_by_index = (
+                    short_term_image_refs.get(item.created_at, {})
+                    if item.role == "user" and short_term_image_refs
+                    else {}
+                )
+                if refs_by_index and short_term_hash_to_alias:
+                    content = KisaragiAgent._replace_image_aliases_with_short_aliases(
+                        content,
+                        refs_by_index=refs_by_index,
+                        hash_to_alias=short_term_hash_to_alias,
+                    )
+                if short_term_url_to_alias:
+                    content = KisaragiAgent._replace_urls_with_known_aliases(
+                        content,
+                        url_to_alias=short_term_url_to_alias,
+                    )
+                merged_messages.extend(
+                    KisaragiAgent._stored_payload_messages(
+                        role=item.role,
+                        content=content,
+                        created_at=item.created_at,
+                        self_name=self_name,
+                    )
+                )
+            if not merged_messages:
+                return "(empty)"
+            return KisaragiAgent._render_simple_payload(merged_messages)
+        blocks: list[str] = []
+        for item in messages:
             content = KisaragiAgent._replace_legacy_image_hash_aliases(
                 item.content,
                 hash_to_alias=short_term_hash_to_alias,
@@ -1112,8 +1188,299 @@ class KisaragiAgent:
                     content,
                     url_to_alias=short_term_url_to_alias,
                 )
-            lines.append(f"{idx}. [{item.role}] {content}")
+            formatted_content = KisaragiAgent._format_stored_short_term_message(
+                role=item.role,
+                content=content,
+                created_at=item.created_at,
+                message_format=message_format,
+                self_name=self_name,
+            )
+            blocks.append(formatted_content)
+        return "\n\n".join(block for block in blocks if block.strip())
+
+    @staticmethod
+    def _stored_payload_messages(
+        *,
+        role: str,
+        content: str,
+        created_at: float,
+        self_name: str,
+    ) -> list[dict[str, object]]:
+        payload = KisaragiAgent._try_parse_stored_message_payload(content)
+        if payload is None:
+            payload = KisaragiAgent._build_virtual_message_payload(
+                role=role,
+                content=content,
+                created_at=created_at,
+                self_name=self_name,
+            )
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            return []
+        return [cast(dict[str, object], item) for item in messages if isinstance(item, dict)]
+
+    @staticmethod
+    def _format_stored_short_term_message(
+        *,
+        role: str,
+        content: str,
+        created_at: float,
+        message_format: str,
+        self_name: str,
+    ) -> str:
+        if role == "user":
+            if message_format == "simple":
+                return KisaragiAgent._render_stored_message_content(
+                    content=content,
+                    created_at=created_at,
+                    role=role,
+                    self_name=self_name,
+                )
+            return content
+        if role == "assistant":
+            return KisaragiAgent._render_stored_message_content(
+                content=content,
+                created_at=created_at,
+                role=role,
+                force_structured=True,
+                message_format=message_format,
+                self_name=self_name,
+            )
+        return content
+
+    @staticmethod
+    def _render_stored_message_content(
+        *,
+        content: str,
+        created_at: float,
+        role: str,
+        force_structured: bool = False,
+        message_format: str = "simple",
+        self_name: str = "assistant",
+    ) -> str:
+        payload = KisaragiAgent._try_parse_stored_message_payload(content)
+        if payload is None and force_structured:
+            payload = KisaragiAgent._build_virtual_message_payload(
+                role=role,
+                content=content,
+                created_at=created_at,
+                self_name=self_name,
+            )
+        if payload is None:
+            return content
+        if message_format == "simple":
+            messages = payload.get("messages")
+            if not isinstance(messages, list):
+                return content
+            normalized_messages = [
+                cast(dict[str, object], item) for item in messages if isinstance(item, dict)
+            ]
+            if not normalized_messages:
+                return content
+            return KisaragiAgent._render_simple_payload(normalized_messages)
+        return yaml.safe_dump(payload, allow_unicode=True, sort_keys=False).strip()
+
+    @staticmethod
+    def _try_parse_stored_message_payload(content: str) -> dict[str, object] | None:
+        text = str(content or "").strip()
+        if not text:
+            return None
+        try:
+            loaded = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return None
+        if not isinstance(loaded, dict):
+            return None
+        messages = loaded.get("messages")
+        if not isinstance(messages, list):
+            return None
+        return cast(dict[str, object], loaded)
+
+    @staticmethod
+    def _build_virtual_message_payload(
+        *,
+        role: str,
+        content: str,
+        created_at: float,
+        self_name: str = "assistant",
+    ) -> dict[str, object]:
+        sender_name = self_name if role == "assistant" else role
+        sender_id = "assistant" if role == "assistant" else role
+        return {
+            "schema_version": 1,
+            "platform": "short_term_memory",
+            "conversation": {
+                "id": "(memory)",
+                "type": "short_term",
+            },
+            "messages": [
+                {
+                    "message_id": f"{role}-{created_at}",
+                    "sent_at_local": datetime.fromtimestamp(created_at).astimezone().isoformat(),
+                    "sender": {
+                        "id": sender_id,
+                        "name": sender_name,
+                        "is_me": role == "assistant",
+                    },
+                    "mentioned_bot": False,
+                    "segments": [
+                        {
+                            "type": "text",
+                            "text": str(content or ""),
+                        }
+                    ],
+                }
+            ],
+        }
+
+    @staticmethod
+    def _render_simple_payload(messages: list[dict[str, object]]) -> str:
+        blocks: list[str] = []
+        block_started_at: datetime | None = None
+        for message in messages:
+            timestamp = KisaragiAgent._parse_sent_at_local(message)
+            if timestamp is not None and (
+                block_started_at is None
+                or (timestamp - block_started_at).total_seconds() > SIMPLE_TIME_GAP_SECONDS
+            ):
+                blocks.append(timestamp.strftime("%Y-%m-%d %H:%M"))
+                block_started_at = timestamp
+            blocks.append(KisaragiAgent._render_simple_message(message))
+        if not blocks:
+            return "---\n---"
+        return "---\n" + "\n---\n".join(blocks) + "\n---"
+
+    @staticmethod
+    def _parse_sent_at_local(message: dict[str, object]) -> datetime | None:
+        raw = str(message.get("sent_at_local", "") or "").strip()
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _render_simple_message(message: dict[str, object]) -> str:
+        sender_name = KisaragiAgent._message_sender_name(message)
+        content, reference_lines = KisaragiAgent._render_simple_message_content(
+            message,
+            reply_depth=1,
+        )
+        prefix = "(有人@我)" if bool(message.get("mentioned_bot")) else ""
+        header = f"{prefix}[{sender_name}]:"
+        if content:
+            header = f"{header} {content}"
+        if not reference_lines:
+            return header
+        lines = [header]
+        lines.extend(f"  {line}" for line in reference_lines)
         return "\n".join(lines)
+
+    @staticmethod
+    def _render_simple_message_content(
+        message: dict[str, object],
+        *,
+        reply_depth: int,
+    ) -> tuple[str, list[str]]:
+        inline_parts: list[str] = []
+        reference_lines: list[str] = []
+        segments = message.get("segments")
+        if not isinstance(segments, list):
+            segments = []
+        for raw_segment in segments:
+            if not isinstance(raw_segment, dict):
+                continue
+            segment = cast(dict[str, object], raw_segment)
+            segment_type = str(segment.get("type", "") or "").strip()
+            if segment_type == "text":
+                KisaragiAgent._append_inline_part(
+                    inline_parts,
+                    str(segment.get("text", "") or ""),
+                )
+                continue
+            if segment_type == "at":
+                KisaragiAgent._append_inline_part(
+                    inline_parts,
+                    str(segment.get("text", "") or ""),
+                )
+                continue
+            if segment_type == "image":
+                KisaragiAgent._append_inline_part(
+                    inline_parts,
+                    str(segment.get("image", "") or ""),
+                )
+                continue
+            if segment_type != "reply":
+                continue
+            if reply_depth <= 0:
+                reply_id = str(segment.get("reply_to_message_id", "") or "").strip()
+                KisaragiAgent._append_inline_part(
+                    inline_parts,
+                    f"[reply:{reply_id or 'unknown'}]",
+                )
+                continue
+            reference_lines.append(
+                KisaragiAgent._render_simple_reference_line(
+                    segment,
+                    reply_depth=reply_depth,
+                )
+            )
+
+        inline_text = "".join(inline_parts).strip()
+        if not inline_text:
+            inline_text = str(message.get("merged_text", "") or "").strip()
+        return inline_text, reference_lines
+
+    @staticmethod
+    def _render_simple_reference_line(
+        reply_segment: dict[str, object],
+        *,
+        reply_depth: int,
+    ) -> str:
+        nested = reply_segment.get("reply_to_message")
+        reply_id = str(reply_segment.get("reply_to_message_id", "") or "").strip()
+        if not isinstance(nested, dict):
+            return f"[ref {reply_id or 'unknown'}]：(unavailable)"
+        nested_message = cast(dict[str, object], nested)
+        sender_name = KisaragiAgent._message_sender_name(nested_message)
+        content, _ = KisaragiAgent._render_simple_message_content(
+            nested_message,
+            reply_depth=reply_depth - 1,
+        )
+        if not content:
+            content = "(empty)"
+        return f"[ref {sender_name}]：{content}"
+
+    @staticmethod
+    def _message_sender_name(message: dict[str, object]) -> str:
+        sender = message.get("sender")
+        if not isinstance(sender, dict):
+            return "unknown"
+        sender_data = cast(dict[str, object], sender)
+        name = str(sender_data.get("name", "") or "").strip()
+        if bool(sender_data.get("is_me")) and name:
+            return f"{name}(me)"
+        if name:
+            return name
+        sender_id = str(sender_data.get("id", "") or "").strip()
+        return sender_id or "unknown"
+
+    @staticmethod
+    def _append_inline_part(parts: list[str], value: str) -> None:
+        text = str(value or "")
+        if not text:
+            return
+        if not parts:
+            parts.append(text)
+            return
+        previous = parts[-1]
+        if previous.endswith((" ", "\n")) or text.startswith(
+            (" ", "\n", "，", "。", "！", "？", "、", ",", ".", "!", "?")
+        ):
+            parts.append(text)
+            return
+        parts.append(f" {text}")
 
     @staticmethod
     def _replace_urls_with_known_aliases(

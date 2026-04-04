@@ -49,10 +49,7 @@ def run_vision(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     all_image_hashes = state.get("all_image_hashes") or []
     image_hash_to_alias = state.get("image_hash_to_alias") or {}
     if not images and not all_image_hashes:
-        appendix = (
-            "[IMAGE-DESCRIPTIONS]\n(no image input)\n\n"
-            "[INPUT-YAML]\n" + str(state.get("user_message", ""))
-        )
+        appendix = "[IMAGE-DESCRIPTIONS]\n(no image input)"
         agent._log_step_debug(state, "vision", appendix)
         return {
             "vision_appendix": appendix,
@@ -103,9 +100,6 @@ def run_vision(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         blocks.append(f"{item_index}. {alias}\n{description}")
         item_index += 1
 
-    blocks.append("[INPUT-YAML]")
-    blocks.append(str(state.get("user_message", "")))
-
     appendix = "\n\n".join(blocks)
     agent._log_step_debug(state, "vision", appendix)
     return {
@@ -124,11 +118,8 @@ def run_enrich_merge(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     if vision_appendix:
         parts.append(vision_appendix)
     working_text = "\n\n".join(part for part in parts if part)
-    attachment = "[ENRICH-MERGE]\nmerged=url+vision"
-    agent._log_step_debug(state, "enrich_merge", attachment)
     return {
         "working_text": working_text,
-        "step_attachments": agent._set_attachment(state, "enrich_merge", attachment),
     }
 
 
@@ -186,8 +177,6 @@ def run_tools(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         logs.append("No tool was called.")
 
     appendix = "\n\n".join(logs)
-    agent._log_step_debug(state, "tools", appendix)
     return {
         "working_text": state["working_text"] + "\n\n" + appendix,
-        "step_attachments": agent._set_attachment(state, "tools", appendix),
     }

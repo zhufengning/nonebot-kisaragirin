@@ -28,6 +28,7 @@ class GroupState:
     last_message_at: float = 0.0
     queue_version: int = 0
     bot_id: str = ""
+    bot_name: str = ""
     replying: bool = False
     reply_token_counter: int = 0
     active_reply_token: int | None = None
@@ -52,12 +53,16 @@ def _get_group_state(group_id: int) -> GroupState:
 
 
 def _get_group_agent(group_id: int) -> KisaragiAgent:
+    state = _get_group_state(group_id)
     agent = _GROUP_AGENTS.get(group_id)
     if agent is not None:
+        agent.set_self_name(state.bot_name or "assistant")
         return agent
     group_config = PLUGIN_CONFIG.groups[group_id]
     crawler_config = getattr(PLUGIN_CONFIG, "crawler", None)
     agent_kwargs: dict[str, Any] = {
+        "message_format": PLUGIN_CONFIG.message_format,
+        "self_name": state.bot_name or "assistant",
         "exa_api_key": PLUGIN_CONFIG.exa_api_key,
         "brave_search_api_key": PLUGIN_CONFIG.brave_search_api_key,
         "serpapi_api_key": PLUGIN_CONFIG.serpapi_api_key,

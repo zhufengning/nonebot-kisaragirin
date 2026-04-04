@@ -79,12 +79,12 @@ def _parse_route_choices(
 def run_route(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     route_model_id = str(getattr(agent._config.step_models, "route", "") or "").strip()
     model = agent._model(route_model_id or agent._config.step_models.reply)
-    route_msg = model.invoke(
-        [
-            SystemMessage(content=ROUTE_PROMPT),
-            HumanMessage(content=_build_route_input(agent, state)),
-        ]
-    )
+    route_input = _build_route_input(agent, state)
+    messages = [
+        SystemMessage(content=ROUTE_PROMPT),
+        HumanMessage(content=route_input),
+    ]
+    route_msg = model.invoke(messages)
 
     route_decision = state.get("route_decision")
     if route_decision is None:
@@ -100,7 +100,9 @@ def run_route(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     attachment = (
         "[ROUTE]\n"
         f"route_choices={json.dumps(route_choices, ensure_ascii=False)}\n"
-        f"parsed_valid={'true' if parsed_valid else 'false'}"
+        f"parsed_valid={'true' if parsed_valid else 'false'}\n\n"
+        "[ROUTE-RAW-OUTPUT]\n"
+        f"{agent._message_to_text(route_msg.content)}"
     )
     agent._log_step_debug(state, "route", attachment)
     return {

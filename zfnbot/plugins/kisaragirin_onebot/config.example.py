@@ -9,6 +9,7 @@ from zfnbot.plugins.kisaragirin_onebot.config_schema import (
 
 
 PLUGIN_CONFIG = PluginConfig(
+    message_format="yaml",
     short_term_turn_window=12,
     image_max_upload_bytes=4 * 1024 * 1024,
     debug=True,
@@ -62,4 +63,3 @@ PLUGIN_CONFIG = PluginConfig(
         ),
     },
 )
-

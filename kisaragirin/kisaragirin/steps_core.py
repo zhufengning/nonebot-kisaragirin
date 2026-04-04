@@ -63,6 +63,8 @@ def run_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
     short_term_context = agent._format_short_term_context(
         short_term_messages,
+        message_format=agent._config.message_format,
+        self_name=agent._config.self_name,
         short_term_image_refs=short_term_image_refs,
         short_term_hash_to_alias=image_hash_to_alias,
         short_term_url_to_alias=url_to_alias,
@@ -83,17 +85,6 @@ def run_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         "[ORIGINAL-INPUT]\n"
         f"{normalized_message}"
     )
-    attachment_text = (
-        "[LONG-TERM-MEMORY]\n"
-        f"{long_term_memory or '(empty)'}\n\n"
-        "[SHORT-TERM-CONTEXT]\n"
-        f"{short_term_context}\n\n"
-        "[RESOURCE-ALIASES]\n"
-        f"urls: {url_alias_text}\n"
-        f"images: {image_alias_text}\n"
-    )
-    agent._log_step_debug(state, "prepare", attachment_text)
-
     return {
         "user_message_normalized": normalized_message,
         "url_aliases": url_aliases,
@@ -107,9 +98,4 @@ def run_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         "short_term_context": short_term_context,
         "working_text": working_text,
         "working_text_base": working_text,
-        "step_attachments": agent._set_attachment(
-            state,
-            "prepare",
-            attachment_text,
-        ),
     }

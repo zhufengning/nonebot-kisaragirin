@@ -5,13 +5,16 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import count
-from typing import Literal
+from typing import Literal, cast
 
 import yaml
 from kisaragirin import ConversationRequest, ImageInput
 
+from .config_schema import MessageFormat
+
 
 SegmentType = Literal["text", "image", "reply", "at"]
+SIMPLE_TIME_GAP_SECONDS = 3 * 60
 
 
 @dataclass(slots=True)
@@ -42,6 +45,7 @@ def build_agent_request(
     conversation_id: str,
     platform: str,
     messages: list[MessageData],
+    message_format: MessageFormat,
     debug: bool,
 ) -> ConversationRequest:
     images: list[ImageInput] = []
@@ -67,9 +71,13 @@ def build_agent_request(
         "messages": payload_messages,
     }
     yaml_text = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
+    request_message = yaml_text
+    if message_format == "simple":
+        request_message = _render_simple_payload(payload_messages)
     return ConversationRequest(
         conversation_id=conversation_id,
-        message=yaml_text,
+        message=request_message,
+        storage_message=yaml_text,
         images=images,
         debug=debug,
     )
@@ -207,3 +215,135 @@ def _get_or_create_image_alias(
     if image_hash:
         image_hash_to_alias[image_hash] = alias
     return alias
+
+
+def _render_simple_payload(messages: list[dict[str, object]]) -> str:
+    blocks: list[str] = []
+    block_started_at: datetime | None = None
+    for message in messages:
+        timestamp = _parse_sent_at_local(message)
+        if timestamp is not None and (
+            block_started_at is None
+            or (timestamp - block_started_at).total_seconds() > SIMPLE_TIME_GAP_SECONDS
+            ):
+            blocks.append(timestamp.strftime("%Y-%m-%d %H:%M"))
+            block_started_at = timestamp
+        blocks.append(_render_simple_message(message))
+    if not blocks:
+        return "---\n---"
+    return "---\n" + "\n---\n".join(blocks) + "\n---"
+
+
+def _parse_sent_at_local(message: dict[str, object]) -> datetime | None:
+    raw = str(message.get("sent_at_local", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _render_simple_message(message: dict[str, object]) -> str:
+    sender_name = _message_sender_name(message)
+    content, reference_lines = _render_message_content(message, reply_depth=1)
+    prefix = "(有人@我)" if bool(message.get("mentioned_bot")) else ""
+    header = f"{prefix}[{sender_name}]:"
+    if content:
+        header = f"{header} {content}"
+    if not reference_lines:
+        return header
+    lines = [header]
+    lines.extend(f"  {line}" for line in reference_lines)
+    return "\n".join(lines)
+
+
+def _render_message_content(
+    message: dict[str, object],
+    *,
+    reply_depth: int,
+) -> tuple[str, list[str]]:
+    inline_parts: list[str] = []
+    reference_lines: list[str] = []
+    segments = message.get("segments")
+    if not isinstance(segments, list):
+        segments = []
+    for raw_segment in segments:
+        if not isinstance(raw_segment, dict):
+            continue
+        segment = cast(dict[str, object], raw_segment)
+        segment_type = str(segment.get("type", "") or "").strip()
+        if segment_type == "text":
+            _append_inline_part(inline_parts, str(segment.get("text", "") or ""))
+            continue
+        if segment_type == "at":
+            _append_inline_part(inline_parts, str(segment.get("text", "") or ""))
+            continue
+        if segment_type == "image":
+            _append_inline_part(inline_parts, str(segment.get("image", "") or ""))
+            continue
+        if segment_type != "reply":
+            continue
+
+        if reply_depth <= 0:
+            reply_id = str(segment.get("reply_to_message_id", "") or "").strip()
+            _append_inline_part(
+                inline_parts,
+                f"[reply:{reply_id or 'unknown'}]",
+            )
+            continue
+
+        reference_lines.append(_render_reference_line(segment, reply_depth=reply_depth))
+
+    inline_text = "".join(inline_parts).strip()
+    if not inline_text:
+        inline_text = str(message.get("merged_text", "") or "").strip()
+    return inline_text, reference_lines
+
+
+def _render_reference_line(
+    reply_segment: dict[str, object],
+    *,
+    reply_depth: int,
+) -> str:
+    nested = reply_segment.get("reply_to_message")
+    reply_id = str(reply_segment.get("reply_to_message_id", "") or "").strip()
+    if not isinstance(nested, dict):
+        return f"[ref {reply_id or 'unknown'}]：(unavailable)"
+    nested_message = cast(dict[str, object], nested)
+
+    sender_name = _message_sender_name(nested_message)
+    content, _ = _render_message_content(nested_message, reply_depth=reply_depth - 1)
+    if not content:
+        content = "(empty)"
+    return f"[ref {sender_name}]：{content}"
+
+
+def _message_sender_name(message: dict[str, object]) -> str:
+    sender = message.get("sender")
+    if not isinstance(sender, dict):
+        return "unknown"
+    sender_data = cast(dict[str, object], sender)
+    name = str(sender_data.get("name", "") or "").strip()
+    if bool(sender_data.get("is_me")) and name:
+        return f"{name}(me)"
+    if name:
+        return name
+    sender_id = str(sender_data.get("id", "") or "").strip()
+    return sender_id or "unknown"
+
+
+def _append_inline_part(parts: list[str], value: str) -> None:
+    text = str(value or "")
+    if not text:
+        return
+    if not parts:
+        parts.append(text)
+        return
+    previous = parts[-1]
+    if previous.endswith((" ", "\n")) or text.startswith(
+        (" ", "\n", "，", "。", "！", "？", "、", ",", ".", "!", "?")
+    ):
+        parts.append(text)
+        return
+    parts.append(f" {text}")

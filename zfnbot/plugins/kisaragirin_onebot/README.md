@@ -15,6 +15,7 @@
 - `brave_search_api_key`：Brave Search API Key（当 `exa_api_key` 为空时，回退用于 `web_search`）
 - `serpapi_api_key`：SerpApi Key（为空时不启用 `scholar_search` 工具）
 - `groups`：群白名单 + 每群 persona
+- `message_format`：发送给 LLM 的消息格式；`yaml` 保留结构化层级，`simple` 渲染成接近 QQ 聊天记录的纯文本块
 - `short_term_turn_window`：短期记忆保留轮数（按 user+assistant 成对窗口）
 - `image_max_upload_bytes`：单张图片传给模型前允许的最大字节数；超限时自动压缩到阈值内
 - `ops`：可执行管理指令的 QQ 号白名单（非 ops 执行会返回 `Access Denied`）
@@ -44,9 +45,15 @@
 
 ## 输入给 Agent 的格式
 
-- 发送给 `kisaragirin` 的 `ConversationRequest.message` 为 YAML。
-- 包含：会话信息、每条消息的发送时间/发送者 id/昵称、`segments` 列表、`merged_text`。
-- 图片在 YAML 中用 `[image-x]` 占位，并在 `ConversationRequest.images` 里按同序携带真实图片。
+- `message_format=yaml` 时，发送给 `kisaragirin` 的 `ConversationRequest.message` 为 YAML。
+- `message_format=simple` 时，会在发送前把同一份 YAML 渲染成接近 QQ 聊天记录的纯文本：
+  - 每条消息渲染为 `[昵称]: 内容`，并用 `---` 分隔。
+  - 若消息 `@bot`，会在最前面插入 `(有人@我)`。
+  - reply 只展开 1 层，渲染成下一行缩进的 `  [ref 昵称]：内容`。
+  - 连续消息会按 3 分钟窗口插入一个精确到分钟的时间块，时间块同样用 `---` 包裹。
+- 无论选择哪种 `message_format`，短期记忆里持久化的 user 输入都仍然保存为 YAML。
+- 但在 `message_format=simple` 下，`[SHORT-TERM-CONTEXT]` 会在读取这些 YAML 记忆时临时重新渲染成简化聊天记录，保证喂给 LLM 的上下文风格一致。
+- 图片在 YAML/简化文本中都保持 `[image-x]` 占位，并在 `ConversationRequest.images` 里按同序携带真实图片。
 
 ## 记忆与缓存
 

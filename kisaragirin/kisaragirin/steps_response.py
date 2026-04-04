@@ -18,12 +18,12 @@ def _reply_model(agent: Any, *, lite: bool = False):
 
 def _run_reply(agent: Any, state: dict[str, Any], *, step_name: str = "reply") -> dict[str, Any]:
     model = _reply_model(agent)
-    reply_msg = model.invoke(
-        [
-            SystemMessage(content=agent._system_prompt("reply")),
-            HumanMessage(content=state["working_text"]),
-        ]
-    )
+    messages = [
+        SystemMessage(content=agent._system_prompt("reply")),
+        HumanMessage(content=state["working_text"]),
+    ]
+    agent._log_model_messages(state, f"{step_name}.input_first", messages)
+    reply_msg = model.invoke(messages)
     reply_text = agent._message_to_text(reply_msg.content)
     attachment = f"[{step_name.upper()}]\n" + reply_text
     agent._log_step_debug(state, step_name, attachment)
@@ -53,12 +53,13 @@ def run_reply_lite(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         )
 
     model = _reply_model(agent, lite=True)
-    reply_msg = model.invoke(
-        [
-            SystemMessage(content=agent._system_prompt("reply_lite")),
-            HumanMessage(content=reply_input),
-        ]
-    )
+    messages = [
+        SystemMessage(content=agent._system_prompt("reply_lite")),
+        HumanMessage(content=reply_input),
+    ]
+    if attempt == 1:
+        agent._log_model_messages(state, "reply_lite.input_first", messages)
+    reply_msg = model.invoke(messages)
     reply_text = agent._message_to_text(reply_msg.content)
     attachment = f"[REPLY_LITE][attempt={attempt}]\n" + reply_text
     agent._log_step_debug(state, "reply_lite", attachment)
@@ -76,8 +77,6 @@ def run_reply_lite(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 def run_reply_lite_check(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     attempt = int(state.get("reply_lite_attempt", 0) or 0)
     reply_text = str(state.get("reply", "") or "").strip()
-    conversation_id = str(state.get("conversation_id", "?"))
-    route_id = str(state.get("active_route_id", "") or "unknown")
 
     if not reply_text:
         reply_text = "bot选择沉默"
@@ -86,13 +85,8 @@ def run_reply_lite_check(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         attachment = (
             f"[REPLY_LITE_CHECK][attempt={attempt}]\n"
             "result=pass\n"
+            "retry_feedback:\n(none)\n"
             "skipped_reason=reply_is_silence"
-        )
-        agent._log_info(
-            "[LITE-CHECK][conversation=%s][route=%s][attempt=%s] skipped reply_is_silence",
-            conversation_id,
-            route_id,
-            attempt,
         )
         agent._log_step_debug(state, "reply_lite_check", attachment)
         return {
@@ -109,36 +103,15 @@ def run_reply_lite_check(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     diagnostics_list: list[str] = []
     for checker in DEFAULT_LITE_REPLY_CHECKERS:
         result = checker(reply_text)
-        if result.passed:
-            agent._log_info(
-                "[LITE-CHECK][conversation=%s][route=%s][attempt=%s][checker=%s] pass",
-                conversation_id,
-                route_id,
-                attempt,
-                result.checker_name,
-            )
-            continue
-        diagnostics_list.append(result.diagnostics)
-        agent._log_info(
-            "[LITE-CHECK][conversation=%s][route=%s][attempt=%s][checker=%s] fail\n%s",
-            conversation_id,
-            route_id,
-            attempt,
-            result.checker_name,
-            result.diagnostics,
-        )
+        if not result.passed:
+            diagnostics_list.append(result.diagnostics)
 
     if not diagnostics_list:
         attachment = (
             f"[REPLY_LITE_CHECK][attempt={attempt}]\n"
             "result=pass\n"
-            "failed_checker_count=0"
-        )
-        agent._log_info(
-            "[LITE-CHECK][conversation=%s][route=%s][attempt=%s] result=pass failed_checker_count=0",
-            conversation_id,
-            route_id,
-            attempt,
+            "failed_checker_count=0\n"
+            "retry_feedback:\n(none)"
         )
         agent._log_step_debug(state, "reply_lite_check", attachment)
         return {
@@ -157,15 +130,7 @@ def run_reply_lite_check(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         f"[REPLY_LITE_CHECK][attempt={attempt}]\n"
         f"result={check_result}\n"
         f"failed_checker_count={len(diagnostics_list)}\n"
-        f"feedback:\n{retry_feedback}"
-    )
-    agent._log_info(
-        "[LITE-CHECK][conversation=%s][route=%s][attempt=%s] result=%s failed_checker_count=%s",
-        conversation_id,
-        route_id,
-        attempt,
-        check_result,
-        len(diagnostics_list),
+        f"retry_feedback:\n{retry_feedback}"
     )
     agent._log_step_debug(state, "reply_lite_check", attachment)
     return {
@@ -184,14 +149,8 @@ def run_memory_gate(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     delivered_outputs = state.get("delivered_outputs") or []
     should_update_memory = bool(delivered_outputs)
     memory_gate_result = "update" if should_update_memory else "skip"
-    attachment = (
-        "[MEMORY-GATE]\n"
-        f"memory_gate_result={memory_gate_result}"
-    )
-    agent._log_step_debug(state, "memory_gate", attachment)
     return {
         "memory_gate_result": memory_gate_result,
-        "step_attachments": agent._set_attachment(state, "memory_gate", attachment),
     }
 
 
@@ -209,31 +168,29 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         }
 
     delivered_outputs = state.get("delivered_outputs") or []
-    delivered_reply_blocks: list[str] = []
-    for index, output in enumerate(delivered_outputs, start=1):
-        route_id = getattr(output, "route_id", "") or "unknown"
-        content = getattr(output, "content", "") or ""
-        delivered_reply_blocks.append(f"{index}. route={route_id}\n{content}")
+    delivered_reply_blocks = [
+        str(getattr(output, "content", "") or "").strip()
+        for output in delivered_outputs
+        if str(getattr(output, "content", "") or "").strip()
+    ]
     delivered_reply_text = "\n\n".join(delivered_reply_blocks).strip()
 
     memory_model = agent._model(agent._config.step_models.memory)
 
-    msg = memory_model.invoke(
-        [
-            SystemMessage(content=agent._system_prompt("memory")),
-            HumanMessage(
-                content=(
-                    f"{MEMORY_JSON_INSTRUCTION}\n\n"
-                    "[PREVIOUS-LONG-TERM-MEMORY]\n"
-                    f"{state.get('long_term_memory') or '(empty)'}\n\n"
-                    "[THIS-TURN-ENRICHED-INPUT]\n"
-                    f"{state['working_text']}\n\n"
-                    "[THIS-TURN-REPLIES]\n"
-                    f"{delivered_reply_text or '(empty)'}"
-                )
-            ),
-        ]
+    memory_input = (
+        f"{MEMORY_JSON_INSTRUCTION}\n\n"
+        "[PREVIOUS-LONG-TERM-MEMORY]\n"
+        f"{state.get('long_term_memory') or '(empty)'}\n\n"
+        "[THIS-TURN-ENRICHED-INPUT]\n"
+        f"{state['working_text']}\n\n"
+        "[THIS-TURN-REPLIES]\n"
+        f"{delivered_reply_text or '(empty)'}"
     )
+    messages = [
+        SystemMessage(content=agent._system_prompt("memory")),
+        HumanMessage(content=memory_input),
+    ]
+    msg = memory_model.invoke(messages)
 
     parsed = agent._parse_memory_json(agent._message_to_text(msg.content))
     new_long_term = agent._normalize_memory_text(
@@ -242,19 +199,17 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     )
     memory_compacted = False
     if len(new_long_term) > 2000:
-        compact_msg = memory_model.invoke(
-            [
-                SystemMessage(content=agent._system_prompt("memory")),
-                HumanMessage(
-                    content=(
-                        f"{MEMORY_JSON_INSTRUCTION}\n\n"
-                        "你的记忆太长了，需要精简到2000字符以内。\n\n"
-                        "[CURRENT-LONG-TERM-MEMORY]\n"
-                        f"{new_long_term}"
-                    )
-                ),
-            ]
+        compact_input = (
+            f"{MEMORY_JSON_INSTRUCTION}\n\n"
+            "你的记忆太长了，需要精简到2000字符以内。\n\n"
+            "[CURRENT-LONG-TERM-MEMORY]\n"
+            f"{new_long_term}"
         )
+        compact_messages = [
+            SystemMessage(content=agent._system_prompt("memory")),
+            HumanMessage(content=compact_input),
+        ]
+        compact_msg = memory_model.invoke(compact_messages)
         compact_parsed = agent._parse_memory_json(
             agent._message_to_text(compact_msg.content)
         )
@@ -268,7 +223,9 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     agent._memory_store.persist_turn(
         conversation_id=state["conversation_id"],
         long_term_memory=new_long_term,
-        user_message=str(state.get("user_message", "")),
+        user_message=str(
+            state.get("user_storage_message", state.get("user_message", "")) or ""
+        ),
         assistant_reply=delivered_reply_text,
         user_image_hashes=state.get("image_hashes") or [],
     )

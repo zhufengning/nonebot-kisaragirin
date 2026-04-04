@@ -59,6 +59,7 @@ with KisaragiAgent(config) as agent:
         ConversationRequest(
             conversation_id="conv-001",
             message="请看这个链接 https://example.com ，并结合图片给出建议",
+            storage_message="message: 请看这个链接 https://example.com ，并结合图片给出建议\n",
             debug=False,
         )
     )
@@ -72,6 +73,12 @@ with KisaragiAgent(config) as agent:
 - `reply`：把所有非沉默输出按顺序拼接后的文本
 - `outputs`：输出事件列表；当前只会产生 `reply` 类型事件，包含 `route_id`、`content`、`order`、`event_id`
 - `cancelled`：是否整轮都选择沉默（没有任何输出事件）
+
+## 输入消息与持久化
+
+- `ConversationRequest.message` 是实际发给 LLM 的文本。
+- `ConversationRequest.storage_message` 可选；若提供，`memory` 步骤会把它而不是 `message` 写入短期记忆。
+- OneBot 插件会用这个字段保证“发给 LLM 的简化文本”和“数据库里保存的 YAML”彼此独立。
 
 ## 轻量回复模型
 

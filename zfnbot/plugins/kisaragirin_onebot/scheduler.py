@@ -23,6 +23,7 @@ def _build_request(group_id: int, queue: list[QueuedMessage]):
         conversation_id=str(group_id),
         platform="onebot.v11",
         messages=payload_messages,
+        message_format=PLUGIN_CONFIG.message_format,
         debug=PLUGIN_CONFIG.debug,
     )
 
@@ -123,15 +124,6 @@ async def _try_reply(
     )
 
     request = _build_request(group_id, queue_snapshot)
-    if PLUGIN_CONFIG.debug:
-        logger.debug(
-            "reply request prepared trigger={} group={} queue_version={} message_ids={}",
-            trigger,
-            group_id,
-            expected_queue_version,
-            [str(item.message_id) for item in queue_snapshot],
-        )
-
     sent_any = False
     cancelled = False
     delivered_output_ids: list[str] = []
@@ -379,5 +371,3 @@ def _refresh_workers(group_id: int, state: GroupState, expected_queue_version: i
         PLUGIN_CONFIG.timing.mention_quiet_seconds,
         PLUGIN_CONFIG.timing.idle_start_minutes,
     )
-
-

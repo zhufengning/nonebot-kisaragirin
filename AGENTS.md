@@ -27,7 +27,7 @@
 - `zfnbot/plugins/kisaragirin_onebot/scheduler.py`：队列触发策略、发送回复、worker 刷新。
 - `zfnbot/plugins/kisaragirin_onebot/ops.py`：管理指令匹配与执行（`/help`、`/clear`、`/clears`、`/clearl`）。
 - `zfnbot/plugins/kisaragirin_onebot/state.py`：群状态、Agent 缓存、清理与关闭逻辑。
-- `zfnbot/plugins/kisaragirin_onebot/payload.py`：将消息序列化为 YAML，并构造 `ConversationRequest`。
+- `zfnbot/plugins/kisaragirin_onebot/payload.py`：将消息序列化为 YAML 或简化聊天记录文本，并构造 `ConversationRequest`。
 - `zfnbot/plugins/kisaragirin_onebot/config_schema.py`：插件配置结构定义。
 - `zfnbot/plugins/kisaragirin_onebot/config.py`：插件实际运行配置。
 - `kisaragirin/kisaragirin/agent.py`：Agent 主流程与图装配入口。
@@ -48,7 +48,7 @@
 - 仅处理群消息。
 - 消息段支持：`text`、`image`、`reply`（`reply` 会递归抓取原消息并嵌入结构，最大深度限制）。
 - 图片不直接传 URL 给模型，转为 base64 后放入 `ConversationRequest.images`。
-- 发给 Agent 的正文是 YAML，保留 message 与 segment 层级关系。
+- 发给 Agent 的正文由 `message_format` 控制：默认 `yaml` 会保留 message/segment 层级；`simple` 会渲染成接近 QQ 聊天记录的纯文本块。
 - 队列按 `created_at + sequence` 排序。
 - 触发逻辑：
   - 静默 `mention_quiet_seconds` 后，若队列里有 `@bot`，触发一次回复，并引用最后一条 `@` 消息。

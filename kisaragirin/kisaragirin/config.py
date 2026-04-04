@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping, Self, Sequence, TypedDict, Unpack
+from typing import Literal, Mapping, Self, Sequence, TypedDict, Unpack
+
+
+MessageFormat = Literal["yaml", "simple"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -63,6 +66,8 @@ class AgentConfig:
     models: Mapping[str, ModelConfig]
     step_models: StepModelIds
     prompts: PromptConfig = field(default_factory=PromptConfig)
+    message_format: MessageFormat = "yaml"
+    self_name: str = "assistant"
     exa_api_key: str = ""
     brave_search_api_key: str = ""
     serpapi_api_key: str = ""
@@ -92,6 +97,8 @@ class AgentConfig:
 
 
 class AgentConfigKwargs(TypedDict, total=False):
+    message_format: MessageFormat
+    self_name: str
     exa_api_key: str
     brave_search_api_key: str
     serpapi_api_key: str
@@ -108,6 +115,7 @@ class AgentConfigKwargs(TypedDict, total=False):
 class ConversationRequest:
     conversation_id: str
     message: str
+    storage_message: str = ""
     images: list[ImageInput] = field(default_factory=list)
     debug: bool = False
 
