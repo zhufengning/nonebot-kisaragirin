@@ -8,6 +8,11 @@
 - 运行配置：`zfnbot/plugins/kisaragirin_onebot/config.py`
 - 配置示例：`zfnbot/plugins/kisaragirin_onebot/config.example.py`
 
+## NapCat 说明
+
+- 如果使用的是 NapCat，想让合并转发消息在接收侧拿到 `forward.content` 并展开解析，需要在 NapCat 设置里打开“启用上报解析合并消息”。
+- 若未开启，该插件通常只能收到 `forward.id`，无法直接拿到转发内的具体消息内容。
+
 ## 主要配置项
 
 - `models` / `step_models`：模型与步骤映射（其中 `step_models.lite_reply` 用于轻量回复路径，留空时回退到 `step_models.reply`）
@@ -27,7 +32,7 @@
 
 ## 消息处理流程
 
-1. 接收群消息后，提取文本/图片段并保持段顺序。
+1. 接收群消息后，提取并规范化常见 OneBot 段，保持段顺序。当前会显式接收 `text`、`at/mention`、`reply`、`face`、`image`、`record`、`video`、`file`、`json`、`forward`、`poke`、`dice`、`rps`；NapCat 的 `mface` 若已转成 `image`，按图片处理。
 2. 静态图片会先按 `image_max_upload_bytes` 做大小检查；超限时自动压缩，再转为 base64，不把临时 URL 传给模型。
 3. 动图会保留单个图片占位，但在视觉步骤里按时间顺序抽取最多 5 帧，一次性发给视觉模型，并产出一条合并描述。
 4. 消息进入群队列，按 `event.time + sequence` 排序。
@@ -50,10 +55,12 @@
   - 每条消息渲染为 `[昵称]: 内容`，并用 `---` 分隔。
   - 若消息 `@bot`，会在最前面插入 `(有人@我)`。
   - reply 只展开 1 层，渲染成下一行缩进的 `  [ref 昵称]：内容`。
+  - forward 若携带解析后的内容，也只展开 1 层；每条转发子消息各占一行，格式为 `  [forward 昵称]：内容`。
   - 连续消息会按 3 分钟窗口插入一个精确到分钟的时间块，时间块同样用 `---` 包裹。
+  - 其余非文本段会用占位文本保留：`face` 渲染为 `[face: 名称]`，`record` 渲染为 `[record: 语音]`，`video/file` 渲染为 `[{type}: 文件名]`，`json` 渲染为 `[json: 原文]`，`poke/dice/rps` 渲染为 `[{type}: 关键信息]`。
 - 无论选择哪种 `message_format`，短期记忆里持久化的 user 输入都仍然保存为 YAML。
 - 但在 `message_format=simple` 下，`[SHORT-TERM-CONTEXT]` 会在读取这些 YAML 记忆时临时重新渲染成简化聊天记录，保证喂给 LLM 的上下文风格一致。
-- 图片在 YAML/简化文本中都保持 `[image-x]` 占位，并在 `ConversationRequest.images` 里按同序携带真实图片。
+- YAML 会在规范化字段之外尽量额外保留原始 OneBot `data` 字段；图片在 YAML/简化文本中都保持 `[image-x]` 占位，并在 `ConversationRequest.images` 里按同序携带真实图片。
 
 ## 记忆与缓存
 

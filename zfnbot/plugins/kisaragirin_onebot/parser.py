@@ -6,7 +6,7 @@ from io import BytesIO
 import mimetypes
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import unquote_to_bytes
 
 import httpx
@@ -16,7 +16,7 @@ from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, Message
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .config import PLUGIN_CONFIG
-from .payload import MessageData, MessageSegmentData
+from .payload import MessageData, MessageSegmentData, SegmentType
 
 AT_TEXT_PATTERNS = (
     re.compile(r"\[at:qq=(\d+)\]"),
@@ -440,6 +440,122 @@ def _coerce_to_message(raw_message: Any) -> Message:
     return message
 
 
+def _parse_forward_sender(item: dict[str, Any], fallback_name: str) -> tuple[int, str]:
+    sender_raw = item.get("sender")
+    sender = sender_raw if isinstance(sender_raw, dict) else {}
+
+    sender_id_raw = item.get("user_id", sender.get("user_id", 0))
+    sender_id = int(sender_id_raw) if str(sender_id_raw).isdigit() else 0
+
+    for candidate in (
+        sender.get("card"),
+        sender.get("nickname"),
+        sender.get("name"),
+        item.get("sender_name"),
+        item.get("nickname"),
+        item.get("name"),
+    ):
+        name = str(candidate or "").strip()
+        if name:
+            return sender_id, name
+    if sender_id:
+        return sender_id, str(sender_id)
+    return 0, fallback_name
+
+
+def _extract_forward_raw_message(item: dict[str, Any]) -> Any:
+    if "message" in item:
+        return item.get("message")
+
+    if "content" in item:
+        content = item.get("content")
+        if isinstance(content, list):
+            if all(
+                isinstance(entry, dict) and "type" in entry and "data" in entry
+                for entry in content
+            ):
+                return content
+            if len(content) == 1 and isinstance(content[0], dict):
+                nested = cast(dict[str, Any], content[0])
+                if "message" in nested or "content" in nested or "segments" in nested:
+                    return _extract_forward_raw_message(nested)
+        return content
+
+    if "segments" in item:
+        return item.get("segments")
+
+    if "type" in item and "data" in item:
+        return [item]
+
+    return item
+
+
+async def _parse_forward_content(
+    bot: Bot,
+    *,
+    raw_content: Any,
+    group_id: int,
+    message_id: int | str,
+    bot_id: str,
+    depth: int,
+    seen: set[str],
+) -> list[MessageData]:
+    if not isinstance(raw_content, list):
+        return []
+
+    forward_messages: list[MessageData] = []
+    for index, item in enumerate(raw_content, start=1):
+        fallback_name = f"forward-{index}"
+        sender_id = 0
+        sender_name = fallback_name
+        created_at = 0.0
+        nested_message_id: int | str = f"{message_id}:forward:{index}"
+        nested_raw_message: Any = item
+
+        if isinstance(item, dict):
+            nested_message_id = item.get("message_id", item.get("id", nested_message_id))
+            sender_id, sender_name = _parse_forward_sender(item, fallback_name)
+            created_at_raw = item.get("time", item.get("date", 0.0))
+            try:
+                created_at = float(created_at_raw)
+            except Exception:
+                created_at = 0.0
+            nested_raw_message = _extract_forward_raw_message(item)
+
+        nested_segments, _, nested_has_unknown = await _parse_segments(
+            bot,
+            message=_coerce_to_message(nested_raw_message),
+            bot_id=bot_id,
+            group_id=group_id,
+            message_id=nested_message_id,
+            mentioned_bot=False,
+            detect_mention=False,
+            depth=depth + 1,
+            seen=set(seen),
+        )
+        forward_messages.append(
+            MessageData(
+                message_id=nested_message_id,
+                created_at=created_at,
+                sender_id=sender_id,
+                sender_name=sender_name,
+                mentioned_bot=False,
+                segments=nested_segments,
+                has_unknown_segment=nested_has_unknown,
+            )
+        )
+        logger.debug(
+            "forward entry parsed group={} message_id={} forward_index={} sender={} segment_count={} raw_type={}",
+            group_id,
+            message_id,
+            index,
+            sender_name,
+            len(nested_segments),
+            type(nested_raw_message).__name__,
+        )
+    return forward_messages
+
+
 async def _load_reply_message(
     bot: Bot,
     *,
@@ -601,6 +717,7 @@ async def _parse_segments(
                     type="reply",
                     reply_message_id=reply_message_id,
                     reply=reply_message,
+                    raw_data=segment_data,
                 )
             )
             continue
@@ -620,6 +737,7 @@ async def _parse_segments(
                         type="at",
                         text="@全体成员",
                         at_name="全体成员",
+                        raw_data=segment_data,
                     )
                 )
                 continue
@@ -632,6 +750,7 @@ async def _parse_segments(
                     text=f"@{name}",
                     at_user_id=user_id or None,
                     at_name=str(name),
+                    raw_data=segment_data,
                 )
             )
             continue
@@ -651,12 +770,19 @@ async def _parse_segments(
                                 idx,
                             )
                             break
-                segments.append(MessageSegmentData(type="text", text=text))
+                segments.append(
+                    MessageSegmentData(
+                        type="text",
+                        text=text,
+                        raw_data=segment_data,
+                    )
+                )
             continue
 
         if segment_type == "image":
             image_segment = await _image_segment_to_data(bot, segment)
             if image_segment is not None:
+                image_segment.raw_data = segment_data
                 segments.append(image_segment)
             continue
 
@@ -675,7 +801,40 @@ async def _parse_segments(
                 if not face_id:
                     continue
                 name = _qq_face_name(face_id) or face_id
-            segments.append(MessageSegmentData(type="text", text=f"[face:{name}]"))
+            segments.append(
+                MessageSegmentData(
+                    type="face",
+                    text=name,
+                    raw_data=segment_data,
+                )
+            )
+            continue
+
+        if segment_type in {"record", "video", "file", "json", "poke", "dice", "rps"}:
+            segments.append(
+                MessageSegmentData(
+                    type=cast(SegmentType, segment_type),
+                    raw_data=segment_data,
+                )
+            )
+            continue
+
+        if segment_type == "forward":
+            segments.append(
+                MessageSegmentData(
+                    type="forward",
+                    raw_data=segment_data,
+                    forward_messages=await _parse_forward_content(
+                        bot,
+                        raw_content=segment_data.get("content"),
+                        group_id=group_id,
+                        message_id=message_id,
+                        bot_id=bot_id,
+                        depth=depth,
+                        seen=seen,
+                    ),
+                )
+            )
             continue
 
         has_unknown_segment = True

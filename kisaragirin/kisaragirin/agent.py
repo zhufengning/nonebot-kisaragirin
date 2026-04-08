@@ -1362,20 +1362,42 @@ class KisaragiAgent:
                     str(segment.get("image", "") or ""),
                 )
                 continue
-            if segment_type != "reply":
-                continue
-            if reply_depth <= 0:
-                reply_id = str(segment.get("reply_to_message_id", "") or "").strip()
-                KisaragiAgent._append_inline_part(
-                    inline_parts,
-                    f"[reply:{reply_id or 'unknown'}]",
+            if segment_type == "reply":
+                if reply_depth <= 0:
+                    reply_id = str(segment.get("reply_to_message_id", "") or "").strip()
+                    KisaragiAgent._append_inline_part(
+                        inline_parts,
+                        f"[reply:{reply_id or 'unknown'}]",
+                    )
+                    continue
+                reference_lines.append(
+                    KisaragiAgent._render_simple_reference_line(
+                        segment,
+                        reply_depth=reply_depth,
+                    )
                 )
                 continue
-            reference_lines.append(
-                KisaragiAgent._render_simple_reference_line(
+            if segment_type == "forward":
+                forward_lines = KisaragiAgent._render_simple_forward_lines(
                     segment,
                     reply_depth=reply_depth,
                 )
+                if forward_lines:
+                    reference_lines.extend(forward_lines)
+                    continue
+                forward_id = str(segment.get("forward_id", "") or "").strip()
+                KisaragiAgent._append_inline_part(
+                    inline_parts,
+                    f"[forward:{forward_id or 'unknown'}]",
+                )
+                continue
+
+            placeholder = KisaragiAgent._render_simple_inline_segment(segment)
+            if not placeholder:
+                continue
+            KisaragiAgent._append_inline_part(
+                inline_parts,
+                placeholder,
             )
 
         inline_text = "".join(inline_parts).strip()
@@ -1402,6 +1424,31 @@ class KisaragiAgent:
         if not content:
             content = "(empty)"
         return f"[ref {sender_name}]：{content}"
+
+    @staticmethod
+    def _render_simple_forward_lines(
+        forward_segment: dict[str, object],
+        *,
+        reply_depth: int,
+    ) -> list[str]:
+        raw_messages = forward_segment.get("forward_messages")
+        if not isinstance(raw_messages, list) or not raw_messages:
+            return []
+
+        lines: list[str] = []
+        for raw_message in raw_messages:
+            if not isinstance(raw_message, dict):
+                continue
+            message = cast(dict[str, object], raw_message)
+            sender_name = KisaragiAgent._message_sender_name(message)
+            content, _ = KisaragiAgent._render_simple_message_content(
+                message,
+                reply_depth=reply_depth - 1,
+            )
+            if not content:
+                content = "(empty)"
+            lines.append(f"[forward {sender_name}]：{content}")
+        return lines
 
     @staticmethod
     def _message_sender_name(message: dict[str, object]) -> str:
@@ -1432,6 +1479,66 @@ class KisaragiAgent:
             parts.append(text)
             return
         parts.append(f" {text}")
+
+    @staticmethod
+    def _render_simple_inline_segment(segment: dict[str, object]) -> str:
+        segment_type = str(segment.get("type", "") or "").strip()
+        raw = segment.get("data")
+        raw_data = cast(dict[str, object], raw) if isinstance(raw, dict) else {}
+
+        if segment_type == "face":
+            name = str(segment.get("name", "") or "").strip()
+            if not name:
+                name = str(raw_data.get("id", "") or "").strip() or "unknown"
+            return f"[face: {name}]"
+
+        if segment_type == "record":
+            return "[record: 语音]"
+
+        if segment_type in {"video", "file"}:
+            name = KisaragiAgent._segment_file_name(raw_data) or "unknown"
+            return f"[{segment_type}: {name}]"
+
+        if segment_type == "json":
+            return f"[json: {KisaragiAgent._json_segment_text(raw_data)}]"
+
+        if segment_type == "poke":
+            detail = KisaragiAgent._joined_segment_detail(raw_data, keys=("type", "id")) or "unknown"
+            return f"[poke: {detail}]"
+
+        if segment_type in {"dice", "rps"}:
+            result = str(raw_data.get("result", "") or "").strip() or "unknown"
+            return f"[{segment_type}: {result}]"
+
+        return ""
+
+    @staticmethod
+    def _segment_file_name(raw_data: dict[str, object]) -> str:
+        for key in ("name", "file", "path", "file_id"):
+            value = str(raw_data.get(key, "") or "").strip()
+            if value:
+                return value.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        return ""
+
+    @staticmethod
+    def _json_segment_text(raw_data: dict[str, object]) -> str:
+        value = raw_data.get("data", "")
+        if isinstance(value, str):
+            return value
+        try:
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        except TypeError:
+            return str(value or "")
+
+    @staticmethod
+    def _joined_segment_detail(
+        raw_data: dict[str, object],
+        *,
+        keys: tuple[str, ...],
+    ) -> str:
+        parts = [str(raw_data.get(key, "") or "").strip() for key in keys]
+        normalized = [part for part in parts if part]
+        return "/".join(normalized)
 
     @staticmethod
     def _replace_urls_with_known_aliases(

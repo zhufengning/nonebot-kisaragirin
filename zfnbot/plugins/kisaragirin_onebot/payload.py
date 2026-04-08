@@ -5,7 +5,8 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import count
-from typing import Literal, cast
+import json
+from typing import Any, Literal, cast
 
 import yaml
 from kisaragirin import ConversationRequest, ImageInput
@@ -13,7 +14,21 @@ from kisaragirin import ConversationRequest, ImageInput
 from .config_schema import MessageFormat
 
 
-SegmentType = Literal["text", "image", "reply", "at"]
+SegmentType = Literal[
+    "text",
+    "image",
+    "reply",
+    "at",
+    "face",
+    "record",
+    "video",
+    "file",
+    "json",
+    "forward",
+    "poke",
+    "dice",
+    "rps",
+]
 SIMPLE_TIME_GAP_SECONDS = 3 * 60
 
 
@@ -27,6 +42,8 @@ class MessageSegmentData:
     reply_message_id: int | str | None = None
     at_user_id: int | None = None
     at_name: str = ""
+    raw_data: dict[str, Any] | None = None
+    forward_messages: list[MessageData] | None = None
 
 
 @dataclass(slots=True)
@@ -95,16 +112,16 @@ def _serialize_message(
 
     for segment in message.segments:
         if segment.type == "text":
+            item: dict[str, object] = {
+                "type": "text",
+                "text": segment.text,
+            }
+            _attach_raw_data(item, segment.raw_data)
             if payload_segments and payload_segments[-1].get("type") == "text":
                 previous = payload_segments[-1].get("text", "")
                 payload_segments[-1]["text"] = f"{previous}{segment.text}"
             else:
-                payload_segments.append(
-                    {
-                        "type": "text",
-                        "text": segment.text,
-                    }
-                )
+                payload_segments.append(item)
             merged_blocks.append(segment.text)
             continue
 
@@ -120,6 +137,7 @@ def _serialize_message(
                 item["qq"] = qq
             if name:
                 item["name"] = name
+            _attach_raw_data(item, segment.raw_data)
             payload_segments.append(item)
             merged_blocks.append(text)
             continue
@@ -137,6 +155,7 @@ def _serialize_message(
             }
             if segment.image_name:
                 item["name"] = segment.image_name
+            _attach_raw_data(item, segment.raw_data)
             payload_segments.append(item)
             merged_blocks.append(alias)
             continue
@@ -167,9 +186,24 @@ def _serialize_message(
                         "reply_to_message": nested,
                     }
                 )
+            _attach_raw_data(payload_segments[-1], segment.raw_data)
             merged_blocks.append(
                 f"[reply:{reply_message_id or (str(segment.reply.message_id) if segment.reply else 'unknown')}]"
             )
+            continue
+
+        item = _serialize_misc_segment(
+            segment,
+            image_index=image_index,
+            images=images,
+            image_hash_to_alias=image_hash_to_alias,
+        )
+        if item is None:
+            continue
+        payload_segments.append(item)
+        placeholder = _render_simple_inline_segment(item)
+        if placeholder:
+            merged_blocks.append(placeholder)
 
     timestamp = datetime.fromtimestamp(message.created_at).astimezone()
     payload: dict[str, object] = {
@@ -185,6 +219,51 @@ def _serialize_message(
     if message.has_unknown_segment:
         payload["merged_text"] = "".join(merged_blocks)
     return payload
+
+
+def _attach_raw_data(item: dict[str, object], raw_data: dict[str, Any] | None) -> None:
+    if raw_data:
+        item["data"] = raw_data
+
+
+def _serialize_misc_segment(
+    segment: MessageSegmentData,
+    *,
+    image_index: count[int],
+    images: list[ImageInput],
+    image_hash_to_alias: dict[str, str],
+) -> dict[str, object] | None:
+    item: dict[str, object] = {"type": segment.type}
+    _attach_raw_data(item, segment.raw_data)
+
+    if segment.type == "forward":
+        forward_id = ""
+        if segment.raw_data:
+            forward_id = str(segment.raw_data.get("id") or "").strip()
+        if forward_id:
+            item["forward_id"] = forward_id
+        if segment.forward_messages:
+            item["forward_messages"] = [
+                _serialize_message(
+                    forward_message,
+                    image_index=image_index,
+                    images=images,
+                    image_hash_to_alias=image_hash_to_alias,
+                )
+                for forward_message in segment.forward_messages
+            ]
+        return item
+
+    if segment.type == "face":
+        face_name = str(segment.text or "").strip()
+        if face_name:
+            item["name"] = face_name
+        return item
+
+    if segment.type in {"record", "video", "file", "json", "poke", "dice", "rps"}:
+        return item
+
+    return None
 
 
 def _image_sha256(image: ImageInput) -> str:
@@ -282,18 +361,33 @@ def _render_message_content(
         if segment_type == "image":
             _append_inline_part(inline_parts, str(segment.get("image", "") or ""))
             continue
-        if segment_type != "reply":
+        if segment_type == "reply":
+            if reply_depth <= 0:
+                reply_id = str(segment.get("reply_to_message_id", "") or "").strip()
+                _append_inline_part(
+                    inline_parts,
+                    f"[reply:{reply_id or 'unknown'}]",
+                )
+                continue
+
+            reference_lines.append(_render_reference_line(segment, reply_depth=reply_depth))
             continue
 
-        if reply_depth <= 0:
-            reply_id = str(segment.get("reply_to_message_id", "") or "").strip()
+        if segment_type == "forward":
+            forward_lines = _render_forward_reference_lines(segment, reply_depth=reply_depth)
+            if forward_lines:
+                reference_lines.extend(forward_lines)
+                continue
+            forward_id = str(segment.get("forward_id", "") or "").strip()
             _append_inline_part(
                 inline_parts,
-                f"[reply:{reply_id or 'unknown'}]",
+                f"[forward:{forward_id or 'unknown'}]",
             )
             continue
 
-        reference_lines.append(_render_reference_line(segment, reply_depth=reply_depth))
+        placeholder = _render_simple_inline_segment(segment)
+        if placeholder:
+            _append_inline_part(inline_parts, placeholder)
 
     inline_text = "".join(inline_parts).strip()
     if not inline_text:
@@ -317,6 +411,28 @@ def _render_reference_line(
     if not content:
         content = "(empty)"
     return f"[ref {sender_name}]：{content}"
+
+
+def _render_forward_reference_lines(
+    forward_segment: dict[str, object],
+    *,
+    reply_depth: int,
+) -> list[str]:
+    raw_messages = forward_segment.get("forward_messages")
+    if not isinstance(raw_messages, list) or not raw_messages:
+        return []
+
+    lines: list[str] = []
+    for raw_message in raw_messages:
+        if not isinstance(raw_message, dict):
+            continue
+        message = cast(dict[str, object], raw_message)
+        sender_name = _message_sender_name(message)
+        content, _ = _render_message_content(message, reply_depth=reply_depth - 1)
+        if not content:
+            content = "(empty)"
+        lines.append(f"[forward {sender_name}]：{content}")
+    return lines
 
 
 def _message_sender_name(message: dict[str, object]) -> str:
@@ -347,3 +463,59 @@ def _append_inline_part(parts: list[str], value: str) -> None:
         parts.append(text)
         return
     parts.append(f" {text}")
+
+
+def _render_simple_inline_segment(segment: dict[str, object]) -> str:
+    segment_type = str(segment.get("type", "") or "").strip()
+    data = segment.get("data")
+    raw = cast(dict[str, object], data) if isinstance(data, dict) else {}
+
+    if segment_type == "face":
+        name = str(segment.get("name", "") or "").strip()
+        if not name:
+            name = str(raw.get("id", "") or "").strip() or "unknown"
+        return f"[face: {name}]"
+
+    if segment_type == "record":
+        return "[record: 语音]"
+
+    if segment_type in {"video", "file"}:
+        name = _segment_file_name(raw)
+        label = name or "unknown"
+        return f"[{segment_type}: {label}]"
+
+    if segment_type == "json":
+        return f"[json: {_json_segment_text(raw)}]"
+
+    if segment_type == "poke":
+        return f"[poke: {_joined_segment_detail(raw, keys=('type', 'id')) or 'unknown'}]"
+
+    if segment_type in {"dice", "rps"}:
+        result = str(raw.get("result", "") or "").strip() or "unknown"
+        return f"[{segment_type}: {result}]"
+
+    return ""
+
+
+def _segment_file_name(raw_data: dict[str, object]) -> str:
+    for key in ("name", "file", "path", "file_id"):
+        value = str(raw_data.get(key, "") or "").strip()
+        if value:
+            return value.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    return ""
+
+
+def _json_segment_text(raw_data: dict[str, object]) -> str:
+    value = raw_data.get("data", "")
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except TypeError:
+        return str(value or "")
+
+
+def _joined_segment_detail(raw_data: dict[str, object], *, keys: tuple[str, ...]) -> str:
+    parts = [str(raw_data.get(key, "") or "").strip() for key in keys]
+    normalized = [part for part in parts if part]
+    return "/".join(normalized)
