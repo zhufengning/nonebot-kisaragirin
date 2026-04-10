@@ -31,6 +31,7 @@ from .config import (
     OutputEvent,
 )
 from .memory import ShortTermMessage, SQLiteMemoryStore
+from .openviking import OpenVikingBridge, OpenVikingToolEvent
 from .orchestration import (
     StepImplementationRegistry,
     build_graph_for_execution_plan,
@@ -145,7 +146,9 @@ class AgentState(TypedDict, total=False):
     image_hash_to_alias: dict[str, str]
     debug: bool
     long_term_memory: str
+    openviking_memory: str
     short_term_context: str
+    tool_events: list[OpenVikingToolEvent]
     working_text: str
     reply: str
     reply_lite_attempt: int
@@ -230,6 +233,13 @@ class KisaragiAgent:
         self._crawler_cls = None
         self._crawler_lock = Lock()
         self._async_runner = _BackgroundAsyncRunner()
+        base_dir = Path(config.memory_db_path).resolve().parent
+        self._openviking = OpenVikingBridge(
+            config.openviking,
+            base_dir=base_dir,
+            logger=self._logger,
+            async_runner=self._async_runner,
+        )
         self._close_lock = Lock()
         self._closed = False
 
@@ -304,7 +314,9 @@ class KisaragiAgent:
             "route_decision": route_decision,
             "execution_plan": execution_plan,
             "debug": request.debug,
+            "openviking_memory": "",
             "output_events": [],
+            "tool_events": [],
             "delivered_outputs": [],
             "step_attachments": {},
         }
@@ -365,6 +377,7 @@ class KisaragiAgent:
         output_events: list[OutputEvent] = []
         all_step_attachments = dict(state.get("step_attachments", {}))
         all_step_durations = dict(state.get("step_durations_ms", {}))
+        all_tool_events = list(state.get("tool_events") or [])
         max_reply_completed_ms = float(state.get("reply_completed_ms", 0.0) or 0.0)
 
         for route_index, route_id in enumerate(route_choices):
@@ -381,11 +394,14 @@ class KisaragiAgent:
                 "route_choice": route_id,
                 "active_route_id": route_id,
                 "route_choices": route_choices,
-                "working_text": self._route_scoped_working_text(aggregated_state, route_id),
+                "working_text": self._route_scoped_working_text(
+                    aggregated_state, route_id
+                ),
                 "execution_plan": execution_plan,
                 "reply": "",
                 "output_events": [],
                 "delivered_outputs": [],
+                "tool_events": [],
                 "step_attachments": {},
                 "step_durations_ms": {},
             }
@@ -406,6 +422,7 @@ class KisaragiAgent:
                     all_step_durations[key] = float(value)
                 except Exception:
                     continue
+            all_tool_events.extend(route_result.get("tool_events") or [])
 
             reply_text = ""
             if reply_output_key:
@@ -431,6 +448,7 @@ class KisaragiAgent:
 
         aggregated_state["step_attachments"] = all_step_attachments
         aggregated_state["step_durations_ms"] = all_step_durations
+        aggregated_state["tool_events"] = all_tool_events
         aggregated_state["reply_completed_ms"] = max_reply_completed_ms
         aggregated_state["output_events"] = output_events
         aggregated_state["reply"] = self._join_output_texts(output_events)
@@ -738,8 +756,32 @@ class KisaragiAgent:
             if self._closed:
                 return
             self._closed = True
+        self._openviking.close()
         self._async_runner.close()
         self._memory_store.close()
+
+    def _search_openviking_memories(
+        self,
+        *,
+        conversation_id: str,
+        query: str,
+    ) -> str:
+        return self._openviking.search_memories(conversation_id, query)
+
+    def _commit_openviking_turn(
+        self,
+        *,
+        conversation_id: str,
+        user_message: str,
+        assistant_reply: str,
+        tool_events: list[OpenVikingToolEvent],
+    ) -> dict[str, Any]:
+        return self._openviking.commit_turn(
+            conversation_id=conversation_id,
+            user_message=user_message,
+            assistant_reply=assistant_reply,
+            tool_events=tool_events,
+        )
 
     def __enter__(self) -> "KisaragiAgent":
         return self

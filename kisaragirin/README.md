@@ -9,6 +9,7 @@
 - crawler 运行参数可配置：`headless`、`verbose`、`user_data_dir`
 - `crawl4ai` 为必选依赖（URL 抓取步骤强依赖）
 - 内置短期记忆（上下文）与长期记忆（持久化到 SQLite）
+- 可选接入 OpenViking：`prepare` 阶段检索外部记忆，`memory` 阶段在 SQLite 写回后再提交会话记忆
 - 内置工具：`read_url`、`exa_search`（Exa，可选）、`web_search`（Exa/Brave，可选）、`scholar_search`（SerpApi，可选）
 - 同一 `conversation_id` 在进程内串行执行，避免并发读写导致记忆错乱
 - 各步骤指令提示词由包内固定，不对调用者暴露修改入口
@@ -22,6 +23,7 @@ from kisaragirin import (
     CrawlerConfig,
     KisaragiAgent,
     ModelConfig,
+    OpenVikingConfig,
     PromptConfig,
     StepModelIds,
 )
@@ -47,6 +49,12 @@ config = AgentConfig.from_model_list(
         lite_reply="gpt4o-mini",
     ),
     prompts=PromptConfig(persona="你是一个专业且可靠的助手。"),
+    openviking=OpenVikingConfig(
+        enabled=True,
+        mode="http",
+        url="http://localhost:1933",
+        agent_id="kisaragirin",
+    ),
     crawler=CrawlerConfig(
         headless=False,
         verbose=True,
@@ -79,6 +87,13 @@ with KisaragiAgent(config) as agent:
 - `ConversationRequest.message` 是实际发给 LLM 的文本。
 - `ConversationRequest.storage_message` 可选；若提供，`memory` 步骤会把它而不是 `message` 写入短期记忆。
 - OneBot 插件会用这个字段保证“发给 LLM 的简化文本”和“数据库里保存的 YAML”彼此独立。
+
+## OpenViking 集成
+
+- `AgentConfig.openviking` 为可选配置；默认关闭。
+- 开启后，`prepare` 会在读取本地长期记忆后，使用当前消息对 OpenViking 执行一次 `search()`，并把结果以 `[OPENVIKING-MEMORY]` 块拼进工作上下文。
+- `memory` 会先按原逻辑更新 SQLite 的长期/短期记忆，再把本轮 `user`、最终发送成功的 `assistant reply` 以及 `default` 路径里实际发生的工具调用结果写入 OpenViking session，最后执行 `commit()`。其中 user 文本会跟随 `message_format`：`yaml` 写结构化 YAML，`simple` 写简化聊天文本。
+- 若 OpenViking 不可用或请求失败，Agent 只会记录日志并降级，不会中断主回复流程。
 
 ## 轻量回复模型
 

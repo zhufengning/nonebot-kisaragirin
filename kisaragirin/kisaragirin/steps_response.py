@@ -232,12 +232,36 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         ),
         user_image_hashes=state.get("image_hashes") or [],
     )
+    openviking_user_message = str(state.get("user_message", "") or "")
+    if str(agent._config.message_format or "yaml").strip().lower() == "yaml":
+        openviking_user_message = str(
+            state.get("user_storage_message", state.get("user_message", "")) or ""
+        )
+    openviking_commit_status = "disabled"
+    openviking_tool_events = state.get("tool_events") or []
+    try:
+        commit_result = agent._commit_openviking_turn(
+            conversation_id=state["conversation_id"],
+            user_message=openviking_user_message,
+            assistant_reply=delivered_reply_text,
+            tool_events=list(openviking_tool_events),
+        )
+        openviking_commit_status = str(commit_result.get("status", "committed"))
+    except Exception as exc:
+        openviking_commit_status = "failed"
+        agent._logger.warning(
+            "OpenViking commit failed for conversation %s: %s",
+            state["conversation_id"],
+            exc,
+        )
 
     attachment = (
         "[MEMORY-UPDATE]\n"
         "long_term_memory_updated=true\n"
         f"long_term_memory_compacted={'true' if memory_compacted else 'false'}\n"
-        "short_term_memory_appended=user+assistant"
+        "short_term_memory_appended=user+assistant\n"
+        f"openviking_commit={openviking_commit_status}\n"
+        f"openviking_tool_events={len(openviking_tool_events)}"
     )
     agent._log_step_debug(
         state,

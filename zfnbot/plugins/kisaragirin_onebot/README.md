@@ -19,6 +19,8 @@
 - `exa_api_key`：Exa API Key（启用 `exa_search`，并优先用于 `web_search`）
 - `brave_search_api_key`：Brave Search API Key（当 `exa_api_key` 为空时，回退用于 `web_search`）
 - `serpapi_api_key`：SerpApi Key（为空时不启用 `scholar_search` 工具）
+- `openviking`：可选 OpenViking 配置；启用后会在 `prepare` 检索 OpenViking 记忆，并在 `memory` 收尾时提交本轮对话与工具结果到 OpenViking
+  - OneBot 插件会显式使用这里配置的 `url/api_key/agent_id` 初始化 Python HTTP client，不依赖 `ov` CLI 的 `ovcli.conf`
 - `groups`：群白名单 + 每群 persona
 - `message_format`：发送给 LLM 的消息格式；`yaml` 保留结构化层级，`simple` 渲染成接近 QQ 聊天记录的纯文本块
 - `short_term_turn_window`：短期记忆保留轮数（按 user+assistant 成对窗口）
@@ -47,6 +49,8 @@
 11. `lite_chat` 路径内部会最多执行 3 轮 `reply_lite -> reply_lite_check`。检查失败时，会把所有评语追加到上一版回复末尾后要求重写；第 3 次仍不通过则取消该路径回复。当前检查器会先忽略句首语气词及其后的 `，！。？`，再检查是否以“这”开头；还会用黑名单关键词拦截括号内容，当前关键词包括 `拍`、`递`、`捂`、`擦`、`晃`、`敲`、`挥`、`躲`、`低头`、`抬头`、`歪头`、`困惑`、`无辜`、`心虚`、`委屈`、`肩`、`脸`、`嘴`、`胸口`、`桌`、`手`、`认错`、`叹气`，以及 `拍肩`、`递零食`、`递奶茶`、`递咖啡`、`困惑脸`、`捂脸`、`小声`，并直接拦截句尾括号表达。若有误报，可在括号后补句号或其他标点。
 12. Agent 会把每条非沉默路径产出为独立输出事件；插件按顺序逐条发送。若整轮都沉默，则本轮正常消费队列但不发消息。
 13. 共享 `memory` 收尾会等全部路径结束且发送阶段完成后再执行，只把实际成功发送的路径回复一起写回记忆。`reply_lite` 的中间草稿和检查评语不会进入短期记忆。若部分路径已成功发送、后续发送失败，为避免重复发送，不会回灌整轮快照。
+14. 若启用了 OpenViking，`prepare` 会在本地长期记忆之后追加一次 `search()` 召回 OpenViking 记忆；`memory` 会在 SQLite 写回后，把本轮 user、最终发送成功的 assistant 回复，以及 `default` 路径中实际发生的工具调用结果写入 OpenViking session 并执行 `commit()`。OpenViking 失败不会影响主回复。
+15. 插件启动时会预热所有启用群的 agent；若 OpenViking 配置无效或初始化失败，启动阶段会直接抛错退出，而不是等到首条消息时才暴露问题。
 
 ## 输入给 Agent 的格式
 
@@ -67,6 +71,7 @@
 `kisaragirin` 侧做了以下持久化：
 
 - 短期记忆：保存 user/assistant 轮次；user 文本中的图片占位保持为 `[image-数字]`。assistant 也会以结构化消息写回，并显式标记为 bot 自己发送，旧的纯文本 assistant 记忆在读取时会自动兼容。
+- OpenViking（可选）：作为外部增长型记忆仓库。当前实现只在 `prepare` 做一次固定 `search()` 召回，在 `memory` 收尾时执行 `commit()` 写入；不会覆盖本地 `fixed_memory` 或 SQLite 长期记忆。写入时 user 文本跟随 `message_format`：`yaml` 模式写 YAML，`simple` 模式写简化聊天文本。
 - URL 总结缓存：`url -> summary`。
 - 图片描述缓存：`sha256 -> description`。
 - URL 若命中关键词黑名单，会跳过抓取与缓存读取，直接返回 `禁止读取的url`；当前黑名单包含 `qq.com.cn`。

@@ -67,6 +67,7 @@ def _get_group_agent(group_id: int) -> KisaragiAgent:
         "brave_search_api_key": PLUGIN_CONFIG.brave_search_api_key,
         "serpapi_api_key": PLUGIN_CONFIG.serpapi_api_key,
         "memory_db_path": PLUGIN_CONFIG.memory_db_path,
+        "openviking": PLUGIN_CONFIG.openviking,
         "short_term_turn_window": PLUGIN_CONFIG.short_term_turn_window,
     }
     if crawler_config is not None:
@@ -84,6 +85,11 @@ def _get_group_agent(group_id: int) -> KisaragiAgent:
     agent = KisaragiAgent(agent_config)
     _GROUP_AGENTS[group_id] = agent
     return agent
+
+
+def initialize_all_group_agents() -> None:
+    for group_id in sorted(PLUGIN_CONFIG.groups):
+        _get_group_agent(group_id)
 
 
 def _cancel_task(task: asyncio.Task[None] | None) -> None:

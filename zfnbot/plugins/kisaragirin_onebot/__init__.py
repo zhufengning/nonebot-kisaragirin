@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 
 from nonebot import get_driver, logger, on_message, on_regex
@@ -9,7 +10,7 @@ from nonebot.plugin import PluginMetadata
 from .config import PLUGIN_CONFIG
 from .handlers import handle_group_message_event
 from .ops import handle_ops_command_event
-from .state import shutdown_plugin
+from .state import initialize_all_group_agents, shutdown_plugin
 
 __plugin_meta__ = PluginMetadata(
     name="kisaragirin_onebot",
@@ -27,6 +28,11 @@ on_ops_cmd = on_regex(
 
 driver = get_driver()
 logger.info("kisaragirin_onebot enabled groups: {}", sorted(PLUGIN_CONFIG.groups.keys()))
+
+
+@driver.on_startup
+async def _startup_plugin() -> None:
+    await asyncio.to_thread(initialize_all_group_agents)
 
 
 @on_all_msg.handle()

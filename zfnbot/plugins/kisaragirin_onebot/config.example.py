@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from kisaragirin import CrawlerConfig, ModelConfig, StepModelIds
+from kisaragirin import CrawlerConfig, ModelConfig, OpenVikingConfig, StepModelIds
 
 from zfnbot.plugins.kisaragirin_onebot.config_schema import (
     GroupConfig,
@@ -16,6 +16,15 @@ PLUGIN_CONFIG = PluginConfig(
     exa_api_key="",
     brave_search_api_key="",
     serpapi_api_key="",
+    openviking=OpenVikingConfig(
+        enabled=True,
+        mode="http",
+        url="http://localhost:1933",
+        api_key="",
+        agent_id="kisaragirin-onebot",
+        search_target_uri="viking://user/memories/",
+        search_limit=5,
+    ),
     crawler=CrawlerConfig(
         headless=False,
         verbose=True,

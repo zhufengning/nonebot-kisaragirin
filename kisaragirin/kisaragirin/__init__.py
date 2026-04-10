@@ -11,6 +11,7 @@ from .config import (
     PromptConfig,
     StepModelIds,
 )
+from .openviking import OpenVikingConfig
 from .routing import (
     ConditionalEdgeSpec,
     ExecutionPlan,
@@ -34,6 +35,7 @@ __all__ = [
     "MessageFormat",
     "ModelConfig",
     "OutputEvent",
+    "OpenVikingConfig",
     "PromptConfig",
     "RouteDecision",
     "StepModelIds",

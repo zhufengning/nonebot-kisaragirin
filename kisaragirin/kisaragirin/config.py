@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, Mapping, Self, Sequence, TypedDict, Unpack
 
+from .openviking import OpenVikingConfig
+
 
 MessageFormat = Literal["yaml", "simple"]
 
@@ -66,6 +68,7 @@ class AgentConfig:
     models: Mapping[str, ModelConfig]
     step_models: StepModelIds
     prompts: PromptConfig = field(default_factory=PromptConfig)
+    openviking: OpenVikingConfig = field(default_factory=OpenVikingConfig)
     message_format: MessageFormat = "yaml"
     self_name: str = "assistant"
     exa_api_key: str = ""
@@ -97,6 +100,7 @@ class AgentConfig:
 
 
 class AgentConfigKwargs(TypedDict, total=False):
+    openviking: OpenVikingConfig
     message_format: MessageFormat
     self_name: str
     exa_api_key: str

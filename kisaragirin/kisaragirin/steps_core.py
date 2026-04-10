@@ -16,6 +16,10 @@ def run_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     ]
     long_term_memory_raw = agent._memory_store.get_long_term(conversation_id)
     long_term_memory = agent._replace_legacy_image_hash_aliases(long_term_memory_raw)
+    openviking_memory = agent._search_openviking_memories(
+        conversation_id=conversation_id,
+        query=normalized_message,
+    )
     short_term_messages = agent._memory_store.get_short_term(
         conversation_id=conversation_id,
         turn_window=agent._config.short_term_turn_window,
@@ -72,7 +76,12 @@ def run_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     working_text = (
         "[LONG-TERM-MEMORY]\n"
         f"{long_term_memory or '(empty)'}\n\n"
-        "[FIXED-MEMORY]\n"
+        + (
+            f"{openviking_memory.strip()}\n\n"
+            if str(openviking_memory or "").strip()
+            else ""
+        )
+        + "[FIXED-MEMORY]\n"
         f"{agent._config.prompts.fixed_memory or '(empty)'}\n\n"
         "[SHORT-TERM-CONTEXT]\n"
         f"{short_term_context}\n\n"
@@ -89,6 +98,7 @@ def run_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         "all_image_hashes": all_image_hashes,
         "image_hash_to_alias": image_hash_to_alias,
         "long_term_memory": long_term_memory,
+        "openviking_memory": openviking_memory,
         "short_term_context": short_term_context,
         "working_text": working_text,
         "working_text_base": working_text,

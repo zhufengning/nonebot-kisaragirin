@@ -6,6 +6,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from .config import ImageInput
+from .openviking import OpenVikingToolEvent
 
 
 def run_urls(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
@@ -128,6 +129,7 @@ def run_tools(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     ]
 
     logs: list[str] = ["[TOOL-EXTRA-INFO]"]
+    tool_events: list[OpenVikingToolEvent] = []
     used_tool = False
 
     for round_idx in range(1, agent._config.max_tool_rounds + 1):
@@ -165,6 +167,17 @@ def run_tools(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
                 f"args={json.dumps(tool_args, ensure_ascii=False)}\n"
                 f"output:\n{tool_output}"
             )
+            tool_events.append(
+                OpenVikingToolEvent(
+                    tool_name=str(tool_name or ""),
+                    tool_input=tool_args,
+                    tool_output=tool_output,
+                    success=not tool_output.startswith(
+                        f"Tool '{tool_name}' execution error:"
+                    )
+                    and tool_output != f"Tool '{tool_name}' is not available.",
+                )
+            )
 
             messages.append(
                 ToolMessage(content=tool_output, tool_call_id=tool_id, name=tool_name)
@@ -174,6 +187,9 @@ def run_tools(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         logs.append("No tool was called.")
 
     appendix = "\n\n".join(logs)
+    agent._log_step_debug(state, "tools", appendix)
     return {
         "working_text": state["working_text"] + "\n\n" + appendix,
+        "tool_events": tool_events,
+        "step_attachments": agent._set_attachment(state, "tools", appendix),
     }

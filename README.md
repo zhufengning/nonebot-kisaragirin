@@ -18,6 +18,7 @@
 - 配置结构定义位于 `zfnbot/plugins/kisaragirin_onebot/config_schema.py`。
 - 实际运行配置位于 `zfnbot/plugins/kisaragirin_onebot/config.py`。
 - `image_max_upload_bytes` 用于限制单张图片传给模型前的最大字节数；超限时会自动压缩，压不进阈值则跳过该图片。
+- 支持可选接入 OpenViking（默认配置示例为 `http://localhost:1933`），用于管理增长型外部记忆。
 
 ## 启动
 

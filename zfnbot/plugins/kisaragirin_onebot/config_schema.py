@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from kisaragirin import CrawlerConfig, ModelConfig, StepModelIds
+from kisaragirin import CrawlerConfig, ModelConfig, OpenVikingConfig, StepModelIds
 
 MessageFormat = Literal["yaml", "simple"]
 
@@ -36,4 +36,5 @@ class PluginConfig:
     timing: ReplyTimingConfig = field(default_factory=ReplyTimingConfig)
     crawler: CrawlerConfig = field(default_factory=CrawlerConfig)
     memory_db_path: str = ".kisaragirin_memory.sqlite3"
+    openviking: OpenVikingConfig = field(default_factory=OpenVikingConfig)
     debug: bool = False
