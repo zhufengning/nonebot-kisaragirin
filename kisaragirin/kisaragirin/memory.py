@@ -84,6 +84,68 @@ class SQLiteMemoryStore:
                 ON short_term_image_refs (conversation_id, user_created_at)
                 """
             )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS openviking_user_keys (
+                    conversation_id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    user_key TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+            self._conn.commit()
+
+    def get_openviking_user_key(
+        self, conversation_id: str
+    ) -> tuple[str, str, str] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT account_id, user_id, user_key
+                FROM openviking_user_keys
+                WHERE conversation_id = ?
+                """,
+                (conversation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return (
+            str(row["account_id"]),
+            str(row["user_id"]),
+            str(row["user_key"]),
+        )
+
+    def set_openviking_user_key(
+        self,
+        conversation_id: str,
+        *,
+        account_id: str,
+        user_id: str,
+        user_key: str,
+    ) -> None:
+        now = time.time()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO openviking_user_keys (
+                    conversation_id,
+                    account_id,
+                    user_id,
+                    user_key,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(conversation_id)
+                DO UPDATE SET
+                    account_id = excluded.account_id,
+                    user_id = excluded.user_id,
+                    user_key = excluded.user_key,
+                    updated_at = excluded.updated_at
+                """,
+                (conversation_id, account_id, user_id, user_key, now),
+            )
             self._conn.commit()
 
     def get_long_term(self, conversation_id: str) -> str:

@@ -20,7 +20,9 @@
 - `brave_search_api_key`：Brave Search API Key（当 `exa_api_key` 为空时，回退用于 `web_search`）
 - `serpapi_api_key`：SerpApi Key（为空时不启用 `scholar_search` 工具）
 - `openviking`：可选 OpenViking 配置；启用后会在 `prepare` 检索 OpenViking 记忆，并在 `memory` 收尾时提交本轮对话与工具结果到 OpenViking
-  - OneBot 插件会显式使用这里配置的 `url/api_key/agent_id` 初始化 Python HTTP client，不依赖 `ov` CLI 的 `ovcli.conf`
+  - OneBot 插件会显式使用这里配置的 HTTP 参数初始化 Python client，不依赖 `ov` CLI 的 `ovcli.conf`
+  - 若直接配置共享 `api_key`，所有群会落到同一个 OpenViking user memory 命名空间，存在跨群召回风险
+  - 推荐改成 `root_api_key + account + conversation_user_prefix`：插件会为每个群自动创建独立 OpenViking user，把返回的 `user_key` 缓存在本地 SQLite，再按群隔离检索/提交记忆
 - `groups`：群白名单 + 每群 persona
 - `message_format`：发送给 LLM 的消息格式；`yaml` 保留结构化层级，`simple` 渲染成接近 QQ 聊天记录的纯文本块
 - `short_term_turn_window`：短期记忆保留轮数（按 user+assistant 成对窗口）
@@ -50,7 +52,8 @@
 12. Agent 会把每条非沉默路径产出为独立输出事件；插件按顺序逐条发送。若整轮都沉默，则本轮正常消费队列但不发消息。
 13. 共享 `memory` 收尾会等全部路径结束且发送阶段完成后再执行，只把实际成功发送的路径回复一起写回记忆。`reply_lite` 的中间草稿和检查评语不会进入短期记忆。若部分路径已成功发送、后续发送失败，为避免重复发送，不会回灌整轮快照。
 14. 若启用了 OpenViking，`prepare` 会在本地长期记忆之后追加一次 `search()` 召回 OpenViking 记忆；`memory` 会在 SQLite 写回后，把本轮 user、最终发送成功的 assistant 回复，以及 `default` 路径中实际发生的工具调用结果写入 OpenViking session 并执行 `commit()`。OpenViking 失败不会影响主回复。
-15. 插件启动时会预热所有启用群的 agent；若 OpenViking 配置无效或初始化失败，启动阶段会直接抛错退出，而不是等到首条消息时才暴露问题。
+15. 为避免跨群召回，HTTP 模式推荐使用 `root_api_key + account + conversation_user_prefix`。插件会为每个 `group_id` 自动创建独立 OpenViking user，并把 `user_key` 缓存在同一个 SQLite 数据库里的 `openviking_user_keys` 表；如果服务端该 user 已存在但本地没有缓存，会自动调用 Admin API 轮换 key 后再落库。
+16. 插件启动时会预热所有启用群的 agent；若 OpenViking 配置无效或初始化失败，启动阶段会直接抛错退出，而不是等到首条消息时才暴露问题。
 
 ## 输入给 Agent 的格式
 
@@ -72,6 +75,7 @@
 
 - 短期记忆：保存 user/assistant 轮次；user 文本中的图片占位保持为 `[image-数字]`。assistant 也会以结构化消息写回，并显式标记为 bot 自己发送，旧的纯文本 assistant 记忆在读取时会自动兼容。
 - OpenViking（可选）：作为外部增长型记忆仓库。当前实现只在 `prepare` 做一次固定 `search()` 召回，在 `memory` 收尾时执行 `commit()` 写入；不会覆盖本地 `fixed_memory` 或 SQLite 长期记忆。写入时 user 文本跟随 `message_format`：`yaml` 模式写 YAML，`simple` 模式写简化聊天文本。
+- 若配置 `root_api_key + account + conversation_user_prefix`，插件会把每个群映射到独立 OpenViking user；若只配置共享 `api_key`，则所有群共享同一 OpenViking user memory 命名空间。
 - URL 总结缓存：`url -> summary`。
 - 图片描述缓存：`sha256 -> description`。
 - URL 若命中关键词黑名单，会跳过抓取与缓存读取，直接返回 `禁止读取的url`；当前黑名单包含 `qq.com.cn`。
@@ -83,6 +87,7 @@
 - `/clear`：清空当前群的消息队列，并删除该群 conversation 的短期/长期记忆。
 - `/clears`：只清除该群 conversation 的短期记忆。
 - `/clearl`：只清除该群 conversation 的长期记忆。
+- `/ov_init_commit`：将当前群现有的本地长期记忆手动 bootstrap 提交一次到 OpenViking。
 
 ## 典型日志
 

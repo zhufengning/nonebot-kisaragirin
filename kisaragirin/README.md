@@ -53,6 +53,9 @@ config = AgentConfig.from_model_list(
         enabled=True,
         mode="http",
         url="http://localhost:1933",
+        root_api_key="root-api-key",
+        account="kisaragirin",
+        conversation_user_prefix="group-",
         agent_id="kisaragirin",
     ),
     crawler=CrawlerConfig(
@@ -93,6 +96,8 @@ with KisaragiAgent(config) as agent:
 - `AgentConfig.openviking` 为可选配置；默认关闭。
 - 开启后，`prepare` 会在读取本地长期记忆后，使用当前消息对 OpenViking 执行一次 `search()`，并把结果以 `[OPENVIKING-MEMORY]` 块拼进工作上下文。
 - `memory` 会先按原逻辑更新 SQLite 的长期/短期记忆，再把本轮 `user`、最终发送成功的 `assistant reply` 以及 `default` 路径里实际发生的工具调用结果写入 OpenViking session，最后执行 `commit()`。其中 user 文本会跟随 `message_format`：`yaml` 写结构化 YAML，`simple` 写简化聊天文本。
+- HTTP 模式下若直接复用单个 `api_key`，OpenViking 会共享同一个 user memory 命名空间；多群或多会话场景可能互相召回记忆。
+- 需要隔离时，改用 `root_api_key + account + conversation_user_prefix`。Agent 会按 `conversation_id` 自动创建 OpenViking user，把返回的 `user_key` 缓存在本地 SQLite，并用该 user key 单独检索/提交记忆。
 - 若 OpenViking 不可用或请求失败，Agent 只会记录日志并降级，不会中断主回复流程。
 
 ## 轻量回复模型

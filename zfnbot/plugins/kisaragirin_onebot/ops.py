@@ -10,13 +10,17 @@ from .config import PLUGIN_CONFIG
 from .state import _clear_group_queue, _get_group_agent
 
 OPS_SET = {int(user_id) for user_id in PLUGIN_CONFIG.ops}
-COMMAND_PATTERN = re.compile(r"^/(clear|clears|clearl|help)(?:\s+.*)?$", re.IGNORECASE)
+COMMAND_PATTERN = re.compile(
+    r"^/(clear|clears|clearl|help|ov_init_commit)(?:\s+.*)?$",
+    re.IGNORECASE,
+)
 COMMAND_HELP_TEXT = (
     "可用指令：\n"
     "/help - 查看指令帮助\n"
     "/clear - 清空当前群消息队列 + 清除短期/长期记忆\n"
     "/clears - 只清除短期记忆\n"
-    "/clearl - 只清除长期记忆"
+    "/clearl - 只清除长期记忆\n"
+    "/ov_init_commit - 将当前群已有长期记忆手动提交一次到 OpenViking"
 )
 
 
@@ -64,6 +68,16 @@ async def handle_ops_command_event(
     if command == "clearl":
         await asyncio.to_thread(agent.clear_long_term_memory, str(group_id))
         await finish("已清除本群长期记忆。")
+        return
+    if command == "ov_init_commit":
+        status = await asyncio.to_thread(
+            agent.init_commit_openviking_long_term_memory,
+            str(group_id),
+        )
+        if status == "empty":
+            await finish("本群当前没有可初始化提交的长期记忆。")
+            return
+        await finish(f"已执行 OpenViking 初始化提交，status={status}")
         return
 
     await _clear_group_queue(group_id)

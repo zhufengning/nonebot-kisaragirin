@@ -239,6 +239,7 @@ class KisaragiAgent:
             base_dir=base_dir,
             logger=self._logger,
             async_runner=self._async_runner,
+            memory_store=self._memory_store,
         )
         self._close_lock = Lock()
         self._closed = False
@@ -747,6 +748,28 @@ class KisaragiAgent:
         conversation_lock = self._get_conversation_lock(conversation_id)
         with conversation_lock:
             self._memory_store.clear_long_term(conversation_id)
+
+    def init_commit_openviking_long_term_memory(self, conversation_id: str) -> str:
+        conversation_lock = self._get_conversation_lock(conversation_id)
+        with conversation_lock:
+            current_long_term = self._memory_store.get_long_term(conversation_id)
+            normalized_long_term = self._replace_legacy_image_hash_aliases(
+                current_long_term
+            ).strip()
+            if not normalized_long_term:
+                return "empty"
+            bootstrap_message = (
+                "[BOOTSTRAP-LONG-TERM-MEMORY]\n"
+                "以下是该会话当前本地长期记忆的历史摘要，请据此初始化外部长期记忆。\n\n"
+                f"{normalized_long_term}"
+            )
+            result = self._commit_openviking_turn(
+                conversation_id=conversation_id,
+                user_message=bootstrap_message,
+                assistant_reply="",
+                tool_events=[],
+            )
+            return str(result.get("status", "committed"))
 
     def set_self_name(self, self_name: str) -> None:
         self._config.self_name = str(self_name or "").strip() or "assistant"
