@@ -94,6 +94,8 @@ URL_PATTERN = re.compile(
 LEGACY_IMAGE_SHA256_PATTERN = re.compile(r"\[image-sha256:([0-9a-fA-F]{64})\]")
 IMAGE_ALIAS_PATTERN = re.compile(r"\[image-(\d+)\]")
 SIMPLE_TIME_GAP_SECONDS = 3 * 60
+URL_READ_BLOCKLIST_KEYWORDS = ("qq.com.cn",)
+BLOCKED_URL_MESSAGE = "禁止读取的url"
 
 _CONVERSATION_LOCKS: dict[str, Lock] = {}
 _CONVERSATION_LOCKS_GUARD = Lock()
@@ -757,15 +759,19 @@ class KisaragiAgent:
         alias: str,
         url: str,
         summary_by_url: dict[str, str],
-    ) -> tuple[str, bool, int]:
+    ) -> tuple[str, str, int]:
+        if self._is_url_blocked(url):
+            summary_by_url[url] = BLOCKED_URL_MESSAGE
+            return BLOCKED_URL_MESSAGE, "blocked", 0
+
         existing = summary_by_url.get(url)
         if existing is not None:
-            return existing, True, 0
+            return existing, "hit", 0
 
         cached = self._memory_store.get_url_summary(url)
         if cached is not None:
             summary_by_url[url] = cached
-            return cached, True, 0
+            return cached, "hit", 0
 
         page_text = self._crawl_url_text(
             url=url, max_chars=self._config.max_crawl_chars
@@ -773,7 +779,7 @@ class KisaragiAgent:
         summary = self._summarize_url(alias=alias, page_text=page_text)
         self._memory_store.set_url_summary(url, summary)
         summary_by_url[url] = summary
-        return summary, False, len(page_text)
+        return summary, "miss", len(page_text)
 
     def _get_or_create_image_description(
         self,
@@ -858,6 +864,9 @@ class KisaragiAgent:
             return f"Tool '{tool_name}' execution error: {exc}"
 
     def _crawl_url_text(self, url: str, max_chars: int) -> str:
+        if self._is_url_blocked(url):
+            return BLOCKED_URL_MESSAGE
+
         crawler_cls = self._get_crawler_cls()
 
         async def _crawl() -> str:
@@ -1041,6 +1050,13 @@ class KisaragiAgent:
             return ""
         return cleaned
 
+    @staticmethod
+    def _is_url_blocked(url: str) -> bool:
+        normalized = str(url).strip().lower()
+        if not normalized:
+            return False
+        return any(keyword in normalized for keyword in URL_READ_BLOCKLIST_KEYWORDS)
+
     def _model(self, model_id: str) -> BaseChatModel:
         return self._models[model_id]
 
@@ -1163,7 +1179,17 @@ class KisaragiAgent:
                         content,
                         url_to_alias=short_term_url_to_alias,
                     )
-                payload_messages = KisaragiAgent._stored_payload_messages(content)
+                payload = KisaragiAgent._coerce_stored_message_payload(
+                    role=item.role,
+                    content=content,
+                    created_at=item.created_at,
+                    self_name=self_name,
+                )
+                payload_messages = (
+                    KisaragiAgent._payload_message_list(payload)
+                    if payload is not None
+                    else []
+                )
                 if payload_messages:
                     merged_messages.extend(payload_messages)
                     continue
@@ -1211,6 +1237,10 @@ class KisaragiAgent:
         payload = KisaragiAgent._try_parse_stored_message_payload(content)
         if payload is None:
             return []
+        return KisaragiAgent._payload_message_list(payload)
+
+    @staticmethod
+    def _payload_message_list(payload: dict[str, object]) -> list[dict[str, object]]:
         messages = payload.get("messages")
         if not isinstance(messages, list):
             return []
@@ -1253,20 +1283,125 @@ class KisaragiAgent:
         message_format: str = "simple",
         self_name: str = "assistant",
     ) -> str:
-        payload = KisaragiAgent._try_parse_stored_message_payload(content)
+        payload = KisaragiAgent._coerce_stored_message_payload(
+            role=role,
+            content=content,
+            created_at=created_at,
+            self_name=self_name,
+        )
         if payload is None:
             return content
         if message_format == "simple":
-            messages = payload.get("messages")
-            if not isinstance(messages, list):
-                return content
-            normalized_messages = [
-                cast(dict[str, object], item) for item in messages if isinstance(item, dict)
-            ]
+            normalized_messages = KisaragiAgent._payload_message_list(payload)
             if not normalized_messages:
                 return content
             return KisaragiAgent._render_simple_payload(normalized_messages)
         return yaml.safe_dump(payload, allow_unicode=True, sort_keys=False).strip()
+
+    @staticmethod
+    def _coerce_stored_message_payload(
+        *,
+        role: str,
+        content: str,
+        created_at: float,
+        self_name: str,
+    ) -> dict[str, object] | None:
+        payload = KisaragiAgent._try_parse_stored_message_payload(content)
+        if payload is not None:
+            if role == "assistant":
+                return KisaragiAgent._mark_payload_as_self_message(
+                    payload,
+                    self_name=self_name,
+                )
+            return payload
+        if role != "assistant":
+            return None
+        normalized_content = str(content or "").strip()
+        if not normalized_content:
+            return None
+        return KisaragiAgent._build_assistant_storage_payload(
+            normalized_content,
+            self_name=self_name,
+            created_at=created_at,
+        )
+
+    @staticmethod
+    def _build_assistant_storage_message(
+        content: str,
+        *,
+        self_name: str,
+        created_at: float | None = None,
+    ) -> str:
+        payload = KisaragiAgent._build_assistant_storage_payload(
+            content,
+            self_name=self_name,
+            created_at=created_at,
+        )
+        return yaml.safe_dump(payload, allow_unicode=True, sort_keys=False).strip()
+
+    @staticmethod
+    def _build_assistant_storage_payload(
+        content: str,
+        *,
+        self_name: str,
+        created_at: float | None = None,
+    ) -> dict[str, object]:
+        normalized_content = str(content or "").strip()
+        normalized_name = str(self_name or "").strip() or "assistant"
+        sent_at = float(created_at) if created_at is not None else time.time()
+        message: dict[str, object] = {
+            "message_id": f"assistant-{int(sent_at * 1000)}",
+            "sent_at_local": datetime.fromtimestamp(sent_at).astimezone().isoformat(),
+            "role": "assistant",
+            "sender": {
+                "id": "assistant",
+                "name": normalized_name,
+                "is_me": True,
+                "role": "assistant",
+            },
+            "mentioned_bot": False,
+            "segments": [
+                {
+                    "type": "text",
+                    "text": normalized_content,
+                }
+            ],
+        }
+        if normalized_content:
+            message["merged_text"] = normalized_content
+        return {
+            "schema_version": 1,
+            "source": "kisaragirin",
+            "messages": [message],
+        }
+
+    @staticmethod
+    def _mark_payload_as_self_message(
+        payload: dict[str, object],
+        *,
+        self_name: str,
+    ) -> dict[str, object]:
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            return payload
+        normalized_name = str(self_name or "").strip() or "assistant"
+        normalized_messages: list[dict[str, object]] = []
+        for raw_message in messages:
+            if not isinstance(raw_message, dict):
+                continue
+            message = dict(cast(dict[str, object], raw_message))
+            sender_raw = message.get("sender")
+            sender = dict(cast(dict[str, object], sender_raw)) if isinstance(sender_raw, dict) else {}
+            sender["id"] = str(sender.get("id", "") or "assistant")
+            sender["name"] = str(sender.get("name", "") or normalized_name)
+            sender["is_me"] = True
+            sender["role"] = "assistant"
+            message["sender"] = sender
+            message["role"] = "assistant"
+            normalized_messages.append(message)
+        normalized_payload = dict(payload)
+        normalized_payload["messages"] = normalized_messages
+        return normalized_payload
 
     @staticmethod
     def _try_parse_stored_message_payload(content: str) -> dict[str, object] | None:

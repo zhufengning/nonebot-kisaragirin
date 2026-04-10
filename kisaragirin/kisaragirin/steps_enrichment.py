@@ -22,12 +22,11 @@ def run_urls(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     summary_by_url: dict[str, str] = {}
 
     for idx, (alias, url) in enumerate(url_aliases.items(), start=1):
-        summary, from_cache, crawled_chars = agent._get_or_create_url_summary(
+        summary, cache_status, crawled_chars = agent._get_or_create_url_summary(
             alias=alias,
             url=url,
             summary_by_url=summary_by_url,
         )
-        cache_status = "hit" if from_cache else "miss"
         blocks.append(
             f"{idx}. {alias}\n"
             f"[URL] {url}\n"

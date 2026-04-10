@@ -66,9 +66,10 @@
 
 `kisaragirin` 侧做了以下持久化：
 
-- 短期记忆：保存 user/assistant 轮次；user 文本中的图片占位保持为 `[image-数字]`。
+- 短期记忆：保存 user/assistant 轮次；user 文本中的图片占位保持为 `[image-数字]`。assistant 也会以结构化消息写回，并显式标记为 bot 自己发送，旧的纯文本 assistant 记忆在读取时会自动兼容。
 - URL 总结缓存：`url -> summary`。
 - 图片描述缓存：`sha256 -> description`。
+- URL 若命中关键词黑名单，会跳过抓取与缓存读取，直接返回 `禁止读取的url`；当前黑名单包含 `qq.com.cn`。
 - 构建新一轮上下文时，会把短期记忆中的 URL/图片重新编号，并在 URL 总结区、图片描述区补齐对应内容（展示仅保留图片编号，不显示 sha256）。
 
 ## 指令

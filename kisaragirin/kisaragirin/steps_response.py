@@ -226,7 +226,10 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         user_message=str(
             state.get("user_storage_message", state.get("user_message", "")) or ""
         ),
-        assistant_reply=delivered_reply_text,
+        assistant_reply=agent._build_assistant_storage_message(
+            delivered_reply_text,
+            self_name=agent._config.self_name,
+        ),
         user_image_hashes=state.get("image_hashes") or [],
     )
 
