@@ -22,16 +22,13 @@ def run_urls(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     summary_by_url: dict[str, str] = {}
 
     for idx, (alias, url) in enumerate(url_aliases.items(), start=1):
-        summary, cache_status, crawled_chars = agent._get_or_create_url_summary(
+        summary, _, _ = agent._get_or_create_url_summary(
             alias=alias,
             url=url,
             summary_by_url=summary_by_url,
         )
         blocks.append(
             f"{idx}. {alias}\n"
-            f"[URL] {url}\n"
-            f"[CACHE] {cache_status}\n"
-            f"[CRAWLED-CONTENT-CHARS] {crawled_chars}\n"
             f"[SUMMARY]\n{summary}"
         )
 
@@ -124,9 +121,10 @@ def run_enrich_merge(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
 def run_tools(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     tool_model = agent._model(agent._config.step_models.tool).bind_tools(agent._tools)
+    tool_input = agent._tool_scoped_working_text(state)
     messages: list[Any] = [
         SystemMessage(content=agent._system_prompt("tool")),
-        HumanMessage(content=state["working_text"]),
+        HumanMessage(content=tool_input),
     ]
 
     logs: list[str] = ["[TOOL-EXTRA-INFO]"]

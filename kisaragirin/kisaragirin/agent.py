@@ -463,6 +463,44 @@ class KisaragiAgent:
             f"{route_instruction}"
         )
 
+    def _tool_scoped_working_text(self, state: AgentState) -> str:
+        route_id = str(state.get("active_route_id", "") or state.get("route_choice", "")).strip()
+        route_instruction = ""
+        route_decision = state.get("route_decision")
+        if route_decision is not None and route_id:
+            route_instruction = (
+                route_decision.route_processing_instructions.get(route_id, "").strip()
+            )
+
+        parts = [
+            "[ORIGINAL-INPUT]\n"
+            f"{str(state.get('user_message_normalized', state.get('user_message', '')) or '').strip()}"
+        ]
+
+        url_appendix = str(state.get("url_appendix", "") or "").strip()
+        if url_appendix:
+            parts.append(url_appendix)
+
+        vision_appendix = str(state.get("vision_appendix", "") or "").strip()
+        if vision_appendix:
+            parts.append(vision_appendix)
+
+        current_turn_sent_context = self._render_current_turn_sent_context(
+            state.get("output_events") or []
+        )
+        if current_turn_sent_context:
+            parts.append(
+                "[THIS-TURN-ALREADY-SENT]\n"
+                f"{current_turn_sent_context}"
+            )
+
+        if route_id:
+            parts.append("[ACTIVE-ROUTE]\n" f"route_id: {route_id}")
+        if route_instruction:
+            parts.append("[ROUTE-INSTRUCTION]\n" f"{route_instruction}")
+
+        return "\n\n".join(part for part in parts if part.strip())
+
     def _render_current_turn_sent_context(
         self,
         outputs: Sequence[OutputEvent],

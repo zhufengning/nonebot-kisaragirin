@@ -69,9 +69,6 @@ def run_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         short_term_hash_to_alias=image_hash_to_alias,
         short_term_url_to_alias=url_to_alias,
     )
-    url_alias_text = ", ".join(url_aliases.keys()) or "(none)"
-    image_alias_text = agent._format_image_alias_text(all_image_aliases)
-
     working_text = (
         "[LONG-TERM-MEMORY]\n"
         f"{long_term_memory or '(empty)'}\n\n"
@@ -79,9 +76,6 @@ def run_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         f"{agent._config.prompts.fixed_memory or '(empty)'}\n\n"
         "[SHORT-TERM-CONTEXT]\n"
         f"{short_term_context}\n\n"
-        "[RESOURCE-ALIASES]\n"
-        f"urls: {url_alias_text}\n"
-        f"images: {image_alias_text}\n\n"
         "[ORIGINAL-INPUT]\n"
         f"{normalized_message}"
     )
