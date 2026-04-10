@@ -377,11 +377,11 @@ class KisaragiAgent:
             )
             reply_output_key = self._reply_output_key_for_execution_plan(execution_plan)
             route_state: AgentState = {
-                **state,
+                **aggregated_state,
                 "route_choice": route_id,
                 "active_route_id": route_id,
                 "route_choices": route_choices,
-                "working_text": self._route_scoped_working_text(state, route_id),
+                "working_text": self._route_scoped_working_text(aggregated_state, route_id),
                 "execution_plan": execution_plan,
                 "reply": "",
                 "output_events": [],
@@ -420,6 +420,7 @@ class KisaragiAgent:
                     dedupe_key=f"{route_id}:{route_index}",
                 )
                 output_events.append(output_event)
+                aggregated_state["output_events"] = list(output_events)
 
             reply_completed_ms = route_result.get("reply_completed_ms")
             if isinstance(reply_completed_ms, (int, float)):
@@ -444,13 +445,51 @@ class KisaragiAgent:
             or "(empty)"
         )
         base_working_text = str(state.get("working_text", ""))
+        current_turn_sent_context = self._render_current_turn_sent_context(
+            state.get("output_events") or []
+        )
+        sent_section = ""
+        if current_turn_sent_context:
+            sent_section = (
+                "\n\n"
+                "[THIS-TURN-ALREADY-SENT]\n"
+                f"{current_turn_sent_context}"
+            )
         return (
-            f"{base_working_text}\n\n"
+            f"{base_working_text}{sent_section}\n\n"
             "[ACTIVE-ROUTE]\n"
             f"route_id: {route_id}\n"
             "[ROUTE-INSTRUCTION]\n"
             f"{route_instruction}"
         )
+
+    def _render_current_turn_sent_context(
+        self,
+        outputs: Sequence[OutputEvent],
+    ) -> str:
+        sent_messages: list[dict[str, object]] = []
+        base_created_at = time.time()
+        for index, output in enumerate(outputs):
+            content = str(getattr(output, "content", "") or "").strip()
+            if not content:
+                continue
+            payload = self._build_assistant_storage_payload(
+                content,
+                self_name=self._config.self_name,
+                created_at=base_created_at + index * 0.001,
+            )
+            sent_messages.extend(self._payload_message_list(payload))
+        if not sent_messages:
+            return ""
+
+        payload: dict[str, object] = {
+            "schema_version": 1,
+            "source": "kisaragirin",
+            "messages": sent_messages,
+        }
+        if self._config.message_format == "simple":
+            return self._render_simple_payload(sent_messages)
+        return yaml.safe_dump(payload, allow_unicode=True, sort_keys=False).strip()
 
     @staticmethod
     def _prefix_state_map(

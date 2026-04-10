@@ -206,6 +206,7 @@ GraphSpec(
 
 - `route` 节点只负责在 state 里写 `route_choices`
 - Agent 运行时会先跑共享前段和选路图，再按 `route_choices` 逐条装配对应的独立路径图继续执行
+- 当某条路径已经产出非沉默回复时，后续路径会额外在输入里看到 `[THIS-TURN-ALREADY-SENT]`，把这些 assistant 消息当作本轮消息记录末尾已经出现的内容
 
 这种方式的优点是：
 
