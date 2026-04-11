@@ -106,10 +106,25 @@ def run_vision(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_enrich_merge(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
-    base = str(state.get("working_text_base", state.get("working_text", "")))
     url_appendix = str(state.get("url_appendix", "") or "").strip()
     vision_appendix = str(state.get("vision_appendix", "") or "").strip()
-    parts = [base]
+    openviking_memory = str(state.get("openviking_memory", "") or "").strip()
+    parts = [
+        "[LONG-TERM-MEMORY]\n"
+        f"{state.get('long_term_memory') or '(empty)'}",
+    ]
+    if openviking_memory:
+        parts.append(openviking_memory)
+    parts.extend(
+        [
+            "[FIXED-MEMORY]\n"
+            f"{agent._config.prompts.fixed_memory or '(empty)'}",
+            "[SHORT-TERM-CONTEXT]\n"
+            f"{state.get('short_term_context') or '(empty)'}",
+            "[ORIGINAL-INPUT]\n"
+            f"{str(state.get('user_message_normalized', state.get('user_message', '')) or '').strip()}",
+        ]
+    )
     if url_appendix:
         parts.append(url_appendix)
     if vision_appendix:

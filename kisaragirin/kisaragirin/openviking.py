@@ -48,7 +48,6 @@ class _OpenVikingClientProtocol(Protocol):
         *,
         query: str,
         session: _OpenVikingSessionProtocol,
-        target_uri: str,
         limit: int,
     ) -> _OpenVikingSearchResultProtocol | Any: ...
 
@@ -66,7 +65,6 @@ class OpenVikingConfig:
     agent_id: str = "kisaragirin"
     session_prefix: str = ""
     conversation_user_prefix: str = ""
-    search_target_uri: str = "viking://user/memories/"
     search_limit: int = 5
 
 
@@ -134,7 +132,6 @@ class OpenVikingBridge:
                 client.search(
                     query=normalized_query,
                     session=session,
-                    target_uri=self._config.search_target_uri,
                     limit=max(1, int(self._config.search_limit)),
                 )
             )

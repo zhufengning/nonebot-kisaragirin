@@ -24,7 +24,6 @@ PLUGIN_CONFIG = PluginConfig(
         account="kisaragirin",
         conversation_user_prefix="onebot-group-",
         agent_id="kisaragirin-onebot",
-        search_target_uri="viking://user/memories/",
         search_limit=5,
     ),
     crawler=CrawlerConfig(

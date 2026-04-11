@@ -11,7 +11,7 @@ from .state import _clear_group_queue, _get_group_agent
 
 OPS_SET = {int(user_id) for user_id in PLUGIN_CONFIG.ops}
 COMMAND_PATTERN = re.compile(
-    r"^/(clear|clears|clearl|help|ov_init_commit)(?:\s+.*)?$",
+    r"^/(clear|clears|clearl|help|ov_init_commit|clear_empty_cache)(?:\s+.*)?$",
     re.IGNORECASE,
 )
 COMMAND_HELP_TEXT = (
@@ -20,7 +20,8 @@ COMMAND_HELP_TEXT = (
     "/clear - 清空当前群消息队列 + 清除短期/长期记忆\n"
     "/clears - 只清除短期记忆\n"
     "/clearl - 只清除长期记忆\n"
-    "/ov_init_commit - 将当前群已有长期记忆手动提交一次到 OpenViking"
+    "/ov_init_commit - 将当前群已有长期记忆手动提交一次到 OpenViking\n"
+    "/clear_empty_cache - 清理 URL/图片缓存中内容为空的条目"
 )
 
 
@@ -78,6 +79,14 @@ async def handle_ops_command_event(
             await finish("本群当前没有可初始化提交的长期记忆。")
             return
         await finish(f"已执行 OpenViking 初始化提交，status={status}")
+        return
+    if command == "clear_empty_cache":
+        result = await asyncio.to_thread(agent.clear_empty_cache_entries)
+        await finish(
+            "已清理空缓存项："
+            f"url_summary_cache={int(result.get('url_summaries', 0) or 0)}，"
+            f"image_description_cache={int(result.get('image_descriptions', 0) or 0)}"
+        )
         return
 
     await _clear_group_queue(group_id)

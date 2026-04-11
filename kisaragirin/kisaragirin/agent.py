@@ -52,7 +52,7 @@ from .routing import (
     build_route_selection_plan,
     normalize_route_ids,
 )
-from .steps_core import run_prepare
+from .steps_core import run_openviking_recall, run_prepare
 from .steps_enrichment import (
     run_enrich_merge,
     run_tools,
@@ -614,6 +614,9 @@ class KisaragiAgent:
             "prepare": {
                 "default": lambda state: run_prepare(self, state),
             },
+            "openviking_recall": {
+                "default": lambda state: run_openviking_recall(self, state),
+            },
             "url": {
                 "default": lambda state: run_urls(self, state),
             },
@@ -748,6 +751,9 @@ class KisaragiAgent:
         conversation_lock = self._get_conversation_lock(conversation_id)
         with conversation_lock:
             self._memory_store.clear_long_term(conversation_id)
+
+    def clear_empty_cache_entries(self) -> dict[str, int]:
+        return self._memory_store.clear_empty_cache_entries()
 
     def init_commit_openviking_long_term_memory(self, conversation_id: str) -> str:
         conversation_lock = self._get_conversation_lock(conversation_id)
@@ -1913,6 +1919,63 @@ class KisaragiAgent:
         if not image_aliases:
             return "(none)"
         return ", ".join(image_aliases)
+
+    @staticmethod
+    def _openviking_appendix_has_signal(appendix: str) -> bool:
+        normalized = str(appendix or "").strip()
+        if not normalized:
+            return False
+        return normalized not in {
+            "[URL-SUMMARIES]\n(no url detected)",
+            "[IMAGE-DESCRIPTIONS]\n(no image input)",
+        }
+
+    @staticmethod
+    def _build_openviking_alias_notes(
+        *,
+        url_aliases: dict[str, str],
+        image_aliases: list[str],
+    ) -> str:
+        aliases: list[str] = []
+        if url_aliases:
+            aliases.extend(str(alias).strip() for alias in url_aliases if str(alias).strip())
+        if image_aliases:
+            aliases.extend(
+                str(alias).strip() for alias in image_aliases if str(alias).strip()
+            )
+        if not aliases:
+            return ""
+        alias_text = ", ".join(aliases)
+        return (
+            "[ALIAS-NOTES]\n"
+            "以下标号只在当前这一次输入中有效，不是稳定ID，不能跨轮复用，不能保存在记忆中，也不代表内容本身。\n"
+            f"当前输入中的临时标号：{alias_text}"
+        )
+
+    def _build_openviking_context_text(
+        self,
+        state: AgentState,
+        *,
+        base_message: str,
+        base_label: str,
+    ) -> str:
+        parts = [
+            f"[{str(base_label).strip() or 'INPUT'}]\n"
+            f"{str(base_message or '').strip() or '(empty)'}"
+        ]
+        alias_notes = self._build_openviking_alias_notes(
+            url_aliases=state.get("url_aliases") or {},
+            image_aliases=list(state.get("image_aliases") or []),
+        )
+        if alias_notes:
+            parts.append(alias_notes)
+        url_appendix = str(state.get("url_appendix", "") or "").strip()
+        if self._openviking_appendix_has_signal(url_appendix):
+            parts.append(url_appendix)
+        vision_appendix = str(state.get("vision_appendix", "") or "").strip()
+        if self._openviking_appendix_has_signal(vision_appendix):
+            parts.append(vision_appendix)
+        return "\n\n".join(part for part in parts if part)
 
     @staticmethod
     def _message_to_text(content: Any) -> str:

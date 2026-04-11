@@ -163,7 +163,7 @@ GraphSpec(
 
 如果两个节点共享同一个前驱，并且后面汇合到同一个节点，就能表达并行。
 
-当前仓库里 `url` / `vision` 的并行前段就是：
+当前仓库里共享前段会先并行执行 `url` / `vision`，再进入 `openviking_recall`：
 
 ```python
 GraphSpec(
@@ -171,13 +171,15 @@ GraphSpec(
         GraphNodeSpec(node_id="prepare", phase="prepare"),
         GraphNodeSpec(node_id="url", phase="url"),
         GraphNodeSpec(node_id="vision", phase="vision"),
+        GraphNodeSpec(node_id="openviking_recall", phase="openviking_recall"),
         GraphNodeSpec(node_id="enrich_merge", phase="enrich_merge"),
     ),
     edges=(
         ("prepare", "url"),
         ("prepare", "vision"),
-        ("url", "enrich_merge"),
-        ("vision", "enrich_merge"),
+        ("url", "openviking_recall"),
+        ("vision", "openviking_recall"),
+        ("openviking_recall", "enrich_merge"),
     ),
     entry_node_ids=("prepare",),
     exit_node_ids=("enrich_merge",),
@@ -190,6 +192,7 @@ GraphSpec(
 - 更稳的做法是：
   - `url` 写 `url_appendix`
   - `vision` 写 `vision_appendix`
+  - `openviking_recall` 读取两者产出的摘要后，再写 `openviking_memory`
   - 由 `enrich_merge` 统一合并到 `working_text`
 
 ### 3.4 条件分支
@@ -198,7 +201,7 @@ GraphSpec(
 
 对于 `route`，当前实现不再把 `default` 和 `lite_chat` 两条路径写在同一张图里，而是拆成三段：
 
-- `shared_prelude_graph`：共享前段（prepare/url/vision/enrich_merge）
+- `shared_prelude_graph`：共享前段（prepare/url/vision/openviking_recall/enrich_merge）
 - `route_selector_graph`：只负责执行 `route` 节点并写出 `route_choices`
 - `route_graph`：根据 `route_choices` 中的每个 route id 依次装配独立路径图，例如 `default_route_graph` 或 `lite_chat_route_graph`
 

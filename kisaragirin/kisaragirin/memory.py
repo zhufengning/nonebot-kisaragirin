@@ -446,6 +446,26 @@ class SQLiteMemoryStore:
             )
             self._conn.commit()
 
+    def clear_empty_cache_entries(self) -> dict[str, int]:
+        with self._lock:
+            image_result = self._conn.execute(
+                """
+                DELETE FROM image_description_cache
+                WHERE TRIM(description) = ''
+                """
+            )
+            url_result = self._conn.execute(
+                """
+                DELETE FROM url_summary_cache
+                WHERE TRIM(summary) = ''
+                """
+            )
+            self._conn.commit()
+        return {
+            "image_descriptions": int(image_result.rowcount or 0),
+            "url_summaries": int(url_result.rowcount or 0),
+        }
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()

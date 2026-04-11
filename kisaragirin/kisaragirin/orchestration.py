@@ -45,6 +45,9 @@ DEFAULT_STEP_METADATA: dict[str, dict[str, StepMetadata]] = {
     "vision": {
         "default": StepMetadata("vision", "vision"),
     },
+    "openviking_recall": {
+        "default": StepMetadata("openviking_recall", "openviking_recall"),
+    },
     "enrich_merge": {
         "default": StepMetadata("enrich_merge", "enrich_merge"),
     },

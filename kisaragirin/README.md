@@ -9,7 +9,7 @@
 - crawler 运行参数可配置：`headless`、`verbose`、`user_data_dir`
 - `crawl4ai` 为必选依赖（URL 抓取步骤强依赖）
 - 内置短期记忆（上下文）与长期记忆（持久化到 SQLite）
-- 可选接入 OpenViking：`prepare` 阶段检索外部记忆，`memory` 阶段在 SQLite 写回后再提交会话记忆
+- 可选接入 OpenViking：`url` / `vision` 完成后再检索外部记忆，`memory` 阶段在 SQLite 写回后再提交会话记忆
 - 内置工具：`read_url`、`exa_search`（Exa，可选）、`web_search`（Exa/Brave，可选）、`scholar_search`（SerpApi，可选）
 - 同一 `conversation_id` 在进程内串行执行，避免并发读写导致记忆错乱
 - 各步骤指令提示词由包内固定，不对调用者暴露修改入口
@@ -94,10 +94,11 @@ with KisaragiAgent(config) as agent:
 ## OpenViking 集成
 
 - `AgentConfig.openviking` 为可选配置；默认关闭。
-- 开启后，`prepare` 会在读取本地长期记忆后，使用当前消息对 OpenViking 执行一次 `search()`，并把结果以 `[OPENVIKING-MEMORY]` 块拼进工作上下文。
-- `memory` 会先按原逻辑更新 SQLite 的长期/短期记忆，再把本轮 `user`、最终发送成功的 `assistant reply` 以及 `default` 路径里实际发生的工具调用结果写入 OpenViking session，最后执行 `commit()`。其中 user 文本会跟随 `message_format`：`yaml` 写结构化 YAML，`simple` 写简化聊天文本。
+- 开启后，共享前段会先完成 `url` / `vision`，再由 `openviking_recall` 使用当前输入、URL/图片摘要以及临时标号说明对 OpenViking 执行一次 `search()`，并把结果以 `[OPENVIKING-MEMORY]` 块拼进工作上下文。
+- `memory` 会先按原逻辑更新 SQLite 的长期/短期记忆，再把本轮 `user`、URL/图片摘要、临时标号说明、最终发送成功的 `assistant reply` 以及 `default` 路径里实际发生的工具调用结果写入 OpenViking session，最后执行 `commit()`。其中基础 user 文本会跟随 `message_format`：`yaml` 写结构化 YAML，`simple` 写简化聊天文本。
 - HTTP 模式下若直接复用单个 `api_key`，OpenViking 会共享同一个 user memory 命名空间；多群或多会话场景可能互相召回记忆。
 - 需要隔离时，改用 `root_api_key + account + conversation_user_prefix`。Agent 会按 `conversation_id` 自动创建 OpenViking user，把返回的 `user_key` 缓存在本地 SQLite，并用该 user key 单独检索/提交记忆。
+- 检索时不再额外限制 `target_uri`，默认直接在当前 OpenViking user 的可见范围内执行 `search()`；会话隔离仅由 `api_key` / `user_key` 与 `conversation_user_prefix` 负责。
 - 若 OpenViking 不可用或请求失败，Agent 只会记录日志并降级，不会中断主回复流程。
 
 ## 轻量回复模型

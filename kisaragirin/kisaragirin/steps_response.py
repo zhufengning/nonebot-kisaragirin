@@ -237,6 +237,11 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         openviking_user_message = str(
             state.get("user_storage_message", state.get("user_message", "")) or ""
         )
+    openviking_user_message = agent._build_openviking_context_text(
+        state,
+        base_message=openviking_user_message,
+        base_label="USER-MESSAGE",
+    )
     openviking_commit_status = "disabled"
     openviking_tool_events = state.get("tool_events") or []
     try:

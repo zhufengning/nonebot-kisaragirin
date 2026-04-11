@@ -16,10 +16,6 @@ def run_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     ]
     long_term_memory_raw = agent._memory_store.get_long_term(conversation_id)
     long_term_memory = agent._replace_legacy_image_hash_aliases(long_term_memory_raw)
-    openviking_memory = agent._search_openviking_memories(
-        conversation_id=conversation_id,
-        query=normalized_message,
-    )
     short_term_messages = agent._memory_store.get_short_term(
         conversation_id=conversation_id,
         turn_window=agent._config.short_term_turn_window,
@@ -73,14 +69,9 @@ def run_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         short_term_hash_to_alias=image_hash_to_alias,
         short_term_url_to_alias=url_to_alias,
     )
-    working_text = (
+    working_text_base = (
         "[LONG-TERM-MEMORY]\n"
         f"{long_term_memory or '(empty)'}\n\n"
-        + (
-            f"{openviking_memory.strip()}\n\n"
-            if str(openviking_memory or "").strip()
-            else ""
-        )
         + "[FIXED-MEMORY]\n"
         f"{agent._config.prompts.fixed_memory or '(empty)'}\n\n"
         "[SHORT-TERM-CONTEXT]\n"
@@ -98,8 +89,35 @@ def run_prepare(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         "all_image_hashes": all_image_hashes,
         "image_hash_to_alias": image_hash_to_alias,
         "long_term_memory": long_term_memory,
-        "openviking_memory": openviking_memory,
         "short_term_context": short_term_context,
-        "working_text": working_text,
-        "working_text_base": working_text,
+        "working_text": working_text_base,
+        "working_text_base": working_text_base,
+    }
+
+
+def run_openviking_recall(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+    openviking_query = agent._build_openviking_context_text(
+        state,
+        base_message=str(
+            state.get("user_message_normalized", state.get("user_message", "")) or ""
+        ),
+        base_label="ORIGINAL-INPUT",
+    )
+    openviking_memory = agent._search_openviking_memories(
+        conversation_id=state["conversation_id"],
+        query=openviking_query,
+    )
+    attachment = (
+        "[OPENVIKING-RECALL]\n"
+        f"query:\n{openviking_query}\n\n"
+        f"result:\n{openviking_memory}"
+    )
+    agent._log_step_debug(state, "openviking_recall", attachment)
+    return {
+        "openviking_memory": openviking_memory,
+        "step_attachments": agent._set_attachment(
+            state,
+            "openviking_recall",
+            attachment,
+        ),
     }
