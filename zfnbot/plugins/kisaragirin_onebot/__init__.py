@@ -15,12 +15,12 @@ from .state import initialize_all_group_agents, shutdown_plugin
 __plugin_meta__ = PluginMetadata(
     name="kisaragirin_onebot",
     description="Queue-based onebot adapter for kisaragirin",
-    usage="/help | /clear | /clears | /clearl | /ov_init_commit",
+    usage="/help | /clear | /clears | /clearl | /ov_init_commit | /clear_empty_cache",
 )
 
 on_all_msg = on_message(priority=20, block=False)
 on_ops_cmd = on_regex(
-    r"^/(clear|clears|clearl|help|ov_init_commit)(?:\s+.*)?$",
+    r"^/(clear|clears|clearl|help|ov_init_commit|clear_empty_cache)(?:\s+.*)?$",
     flags=re.IGNORECASE,
     priority=5,
     block=True,
