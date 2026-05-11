@@ -284,7 +284,30 @@ def _finalize_image_segment(
     final_mime_type = mime_type
     final_name = normalized_name
 
-    if max_upload_bytes > 0 and len(content) > max_upload_bytes:
+    # Vision models typically do not accept image/gif. Convert static GIFs
+    # (or animated ones whose frame extraction failed) to JPEG up-front.
+    if final_mime_type == "image/gif":
+        converted = _compress_image_to_limit(
+            content,
+            image_name=normalized_name,
+            max_upload_bytes=0,
+        )
+        if converted is not None:
+            final_content, final_mime_type, final_name = converted
+            logger.info(
+                "gif converted to jpeg bytes_before={} bytes_after={} name={}",
+                len(content),
+                len(final_content),
+                final_name or normalized_name or "(unknown)",
+            )
+        else:
+            logger.warning(
+                "gif to jpeg conversion failed, skip segment name={}",
+                normalized_name or "(unknown)",
+            )
+            return None
+
+    if max_upload_bytes > 0 and len(final_content) > max_upload_bytes:
         compressed = _compress_image_to_limit(
             content,
             image_name=normalized_name,
