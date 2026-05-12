@@ -11,7 +11,7 @@ from .state import _clear_group_queue, _get_group_agent
 
 OPS_SET = {int(user_id) for user_id in PLUGIN_CONFIG.ops}
 COMMAND_PATTERN = re.compile(
-    r"^/(clear|clears|clearl|help|ov_init_commit|clear_empty_cache)(?:\s+.*)?$",
+    r"^/(clear|clears|clearl|help|ov_init_commit|clear_empty_cache|clearovk)(?:\s+.*)?$",
     re.IGNORECASE,
 )
 COMMAND_HELP_TEXT = (
@@ -21,7 +21,8 @@ COMMAND_HELP_TEXT = (
     "/clears - 只清除短期记忆\n"
     "/clearl - 只清除长期记忆\n"
     "/ov_init_commit - 将当前群已有长期记忆手动提交一次到 OpenViking\n"
-    "/clear_empty_cache - 清理 URL/图片缓存中内容为空的条目"
+    "/clear_empty_cache - 清理 URL/图片缓存中内容为空的条目\n"
+    "/clearovk - 清空数据库中所有 OpenViking 用户的 api key"
 )
 
 
@@ -87,6 +88,10 @@ async def handle_ops_command_event(
             f"url_summary_cache={int(result.get('url_summaries', 0) or 0)}，"
             f"image_description_cache={int(result.get('image_descriptions', 0) or 0)}"
         )
+        return
+    if command == "clearovk":
+        count = await asyncio.to_thread(agent.clear_openviking_user_keys)
+        await finish(f"已清空 {count} 条 OpenViking 用户 key。")
         return
 
     await _clear_group_queue(group_id)

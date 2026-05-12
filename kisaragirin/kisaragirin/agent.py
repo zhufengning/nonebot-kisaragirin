@@ -770,6 +770,9 @@ class KisaragiAgent:
     def clear_empty_cache_entries(self) -> dict[str, int]:
         return self._memory_store.clear_empty_cache_entries()
 
+    def clear_openviking_user_keys(self) -> int:
+        return self._memory_store.clear_openviking_user_keys()
+
     def init_commit_openviking_long_term_memory(self, conversation_id: str) -> str:
         conversation_lock = self._get_conversation_lock(conversation_id)
         with conversation_lock:

@@ -467,6 +467,14 @@ class SQLiteMemoryStore:
             "url_summaries": int(url_result.rowcount or 0),
         }
 
+    def clear_openviking_user_keys(self) -> int:
+        with self._lock:
+            result = self._conn.execute(
+                "DELETE FROM openviking_user_keys"
+            )
+            self._conn.commit()
+        return int(result.rowcount or 0)
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
