@@ -35,6 +35,8 @@ class _OpenVikingSearchResultProtocol(Protocol):
 
 
 class _OpenVikingSessionProtocol(Protocol):
+    session_id: str
+
     def add_message(self, *, role: str, parts: list[dict[str, Any]]) -> Any: ...
     def commit(self) -> Any: ...
 
@@ -50,6 +52,15 @@ class _OpenVikingClientProtocol(Protocol):
         session: _OpenVikingSessionProtocol,
         limit: int,
     ) -> _OpenVikingSearchResultProtocol | Any: ...
+    async def add_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str | None = None,
+        parts: list[dict[str, Any]] | None = None,
+        created_at: str | None = None,
+    ) -> Any: ...
+    async def commit_session(self, session_id: str) -> Any: ...
 
 
 @dataclass(slots=True, frozen=True)
@@ -74,6 +85,36 @@ class OpenVikingToolEvent:
     tool_input: Any
     tool_output: str
     success: bool = True
+
+
+class _SessionProxy:
+    """Lightweight session proxy that delegates to the async client directly.
+
+    Using our own proxy lets all async calls flow through _run_maybe_awaitable
+    and therefore through the single background event loop, avoiding openviking's
+    sync wrappers which spin up a separate global loop.
+    """
+
+    def __init__(self, client: _OpenVikingClientProtocol, session_id: str) -> None:
+        self._client = client
+        self.session_id = session_id
+
+    async def add_message(
+        self,
+        *,
+        role: str,
+        parts: list[dict[str, Any]],
+        created_at: str | None = None,
+    ) -> Any:
+        return await self._client.add_message(
+            self.session_id,
+            role=role,
+            parts=parts,
+            created_at=created_at,
+        )
+
+    async def commit(self) -> Any:
+        return await self._client.commit_session(self.session_id)
 
 
 class OpenVikingBridge:
@@ -226,7 +267,7 @@ class OpenVikingBridge:
         if self._config.mode == "embedded":
             client_factory = cast(
                 Callable[..., _OpenVikingClientProtocol],
-                getattr(module, "OpenViking"),
+                getattr(module, "AsyncOpenViking"),
             )
             path = Path(self._config.path)
             if not path.is_absolute():
@@ -235,7 +276,7 @@ class OpenVikingBridge:
         else:
             client_factory = cast(
                 Callable[..., _OpenVikingClientProtocol],
-                getattr(module, "SyncHTTPClient"),
+                getattr(module, "AsyncHTTPClient"),
             )
             # Always pass explicit HTTP config here instead of relying on the SDK
             # to auto-load ~/.openviking/ovcli.conf. That file is for the CLI and
@@ -278,14 +319,13 @@ class OpenVikingBridge:
 
     def _session(self, conversation_id: str) -> _OpenVikingSessionProtocol:
         client = self._client_for_conversation(conversation_id)
-        return cast(
-            _OpenVikingSessionProtocol,
-            self._run_maybe_awaitable(
-                client.session(
-                    session_id=f"{self._config.session_prefix}{conversation_id}"
-                )
-            )
-        )
+        session_id = f"{self._config.session_prefix}{conversation_id}"
+        # Build the lightweight Session proxy directly so that all async
+        # operations (add_message, commit) are routed through our own
+        # _async_runner via _run_maybe_awaitable.  This avoids relying on
+        # openviking's sync wrappers which use a separate global event loop
+        # and can trigger "bound to a different event loop" errors.
+        return _SessionProxy(client, session_id)
 
     def _get_or_create_conversation_user_key(
         self, conversation_id: str
@@ -408,14 +448,9 @@ class OpenVikingBridge:
             return self._async_runner.run(value)
         return cast(_T, value)
 
-    def _build_text_part(self, text: str) -> Any:
+    def _build_text_part(self, text: str) -> dict[str, Any]:
         normalized_text = str(text or "").strip()
-        try:
-            message_module = import_module("openviking.message")
-            text_part_cls = getattr(message_module, "TextPart")
-            return text_part_cls(text=normalized_text)
-        except Exception:
-            return {"type": "text", "text": normalized_text}
+        return {"type": "text", "text": normalized_text}
 
     @staticmethod
     def _render_tool_events(tool_events: Sequence[OpenVikingToolEvent]) -> str:

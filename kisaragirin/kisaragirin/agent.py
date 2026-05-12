@@ -381,6 +381,7 @@ class KisaragiAgent:
         all_tool_events = list(state.get("tool_events") or [])
         max_reply_completed_ms = float(state.get("reply_completed_ms", 0.0) or 0.0)
 
+        has_silence = False
         for route_index, route_id in enumerate(route_choices):
             execution_plan = self._resolve_execution_plan(
                 route_decision,
@@ -439,6 +440,8 @@ class KisaragiAgent:
                 )
                 output_events.append(output_event)
                 aggregated_state["output_events"] = list(output_events)
+            elif reply_text == "bot选择沉默":
+                has_silence = True
 
             reply_completed_ms = route_result.get("reply_completed_ms")
             if isinstance(reply_completed_ms, (int, float)):
@@ -446,6 +449,18 @@ class KisaragiAgent:
                     max_reply_completed_ms,
                     float(reply_completed_ms),
                 )
+
+        if not output_events and has_silence:
+            output_events = [
+                OutputEvent(
+                    event_id="silence",
+                    event_type="reply",
+                    route_id="silence",
+                    content="bot选择沉默",
+                    order=0,
+                    dedupe_key="silence",
+                )
+            ]
 
         aggregated_state["step_attachments"] = all_step_attachments
         aggregated_state["step_durations_ms"] = all_step_durations
@@ -1180,8 +1195,8 @@ class KisaragiAgent:
 
     @staticmethod
     def _format_url_alias(index: int, url: str) -> str:
-        preview = url[:40].replace("]", "%5D")
-        if len(url) > 40:
+        preview = url[:100].replace("]", "%5D")
+        if len(url) > 100:
             preview += "...(cut off)"
         return f"[url-{index}|{preview}]"
 
@@ -1285,6 +1300,79 @@ class KisaragiAgent:
         return None
 
     @staticmethod
+    def _replace_payload_aliases(
+        payload: dict[str, object],
+        *,
+        refs_by_index: dict[int, str],
+        hash_to_alias: dict[str, str] | None,
+        url_to_alias: dict[str, str] | None,
+    ) -> dict[str, object]:
+        payload = dict(payload)
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            return payload
+
+        new_messages: list[object] = []
+        for raw_msg in messages:
+            if not isinstance(raw_msg, dict):
+                new_messages.append(raw_msg)
+                continue
+            msg = dict(raw_msg)
+            segments = msg.get("segments")
+            if not isinstance(segments, list):
+                new_messages.append(msg)
+                continue
+
+            new_segments: list[object] = []
+            for raw_seg in segments:
+                if not isinstance(raw_seg, dict):
+                    new_segments.append(raw_seg)
+                    continue
+                seg = dict(raw_seg)
+                seg_type = str(seg.get("type", "")).strip()
+
+                if seg_type == "text":
+                    text = str(seg.get("text", "") or "")
+                    text = KisaragiAgent._replace_legacy_image_hash_aliases(
+                        text,
+                        hash_to_alias=hash_to_alias,
+                    )
+                    if hash_to_alias:
+                        text = KisaragiAgent._replace_image_aliases_with_short_aliases(
+                            text,
+                            refs_by_index=refs_by_index,
+                            hash_to_alias=hash_to_alias,
+                        )
+                    if url_to_alias:
+                        text = KisaragiAgent._replace_urls_with_known_aliases(
+                            text,
+                            url_to_alias=url_to_alias,
+                        )
+                    seg["text"] = text
+
+                elif seg_type == "image":
+                    image_val = str(seg.get("image", "") or "")
+                    image_val = KisaragiAgent._replace_legacy_image_hash_aliases(
+                        image_val,
+                        hash_to_alias=hash_to_alias,
+                    )
+                    if hash_to_alias:
+                        image_val = KisaragiAgent._replace_image_aliases_with_short_aliases(
+                            image_val,
+                            refs_by_index=refs_by_index,
+                            hash_to_alias=hash_to_alias,
+                        )
+                    seg["image"] = image_val
+
+                new_segments.append(seg)
+
+            msg["segments"] = new_segments
+            new_messages.append(msg)
+
+        payload["messages"] = new_messages
+        return payload
+
+    @staticmethod
     def _format_short_term_context(
         messages: list[ShortTermMessage],
         *,
@@ -1307,6 +1395,31 @@ class KisaragiAgent:
                 merged_messages.clear()
 
             for item in messages:
+                payload = KisaragiAgent._try_parse_stored_message_payload(item.content)
+                if payload is not None:
+                    if item.role == "assistant":
+                        payload = KisaragiAgent._mark_payload_as_self_message(
+                            payload,
+                            self_name=self_name,
+                        )
+                    refs_by_index = (
+                        short_term_image_refs.get(item.created_at, {})
+                        if item.role == "user" and short_term_image_refs
+                        else {}
+                    )
+                    payload = KisaragiAgent._replace_payload_aliases(
+                        payload,
+                        refs_by_index=refs_by_index,
+                        hash_to_alias=short_term_hash_to_alias,
+                        url_to_alias=short_term_url_to_alias,
+                    )
+                    payload_messages = KisaragiAgent._payload_message_list(payload)
+                    if payload_messages:
+                        merged_messages.extend(payload_messages)
+                        continue
+
+                _flush_merged_messages()
+                # Fallback: raw string replacement for legacy / malformed entries
                 content = KisaragiAgent._replace_legacy_image_hash_aliases(
                     item.content,
                     hash_to_alias=short_term_hash_to_alias,
@@ -1327,29 +1440,39 @@ class KisaragiAgent:
                         content,
                         url_to_alias=short_term_url_to_alias,
                     )
-                payload = KisaragiAgent._coerce_stored_message_payload(
-                    role=item.role,
-                    content=content,
-                    created_at=item.created_at,
-                    self_name=self_name,
-                )
-                payload_messages = (
-                    KisaragiAgent._payload_message_list(payload)
-                    if payload is not None
-                    else []
-                )
-                if payload_messages:
-                    merged_messages.extend(payload_messages)
-                    continue
-                _flush_merged_messages()
                 if content.strip():
                     blocks.append(content)
             _flush_merged_messages()
             if not blocks:
                 return "(empty)"
             return "\n\n".join(block for block in blocks if block.strip())
+
         blocks: list[str] = []
         for item in messages:
+            payload = KisaragiAgent._try_parse_stored_message_payload(item.content)
+            if payload is not None:
+                if item.role == "assistant":
+                    payload = KisaragiAgent._mark_payload_as_self_message(
+                        payload,
+                        self_name=self_name,
+                    )
+                refs_by_index = (
+                    short_term_image_refs.get(item.created_at, {})
+                    if item.role == "user" and short_term_image_refs
+                    else {}
+                )
+                payload = KisaragiAgent._replace_payload_aliases(
+                    payload,
+                    refs_by_index=refs_by_index,
+                    hash_to_alias=short_term_hash_to_alias,
+                    url_to_alias=short_term_url_to_alias,
+                )
+                blocks.append(
+                    yaml.safe_dump(payload, allow_unicode=True, sort_keys=False).strip()
+                )
+                continue
+
+            # Fallback
             content = KisaragiAgent._replace_legacy_image_hash_aliases(
                 item.content,
                 hash_to_alias=short_term_hash_to_alias,
@@ -1951,6 +2074,40 @@ class KisaragiAgent:
             "以下标号只在当前这一次输入中有效，不是稳定ID，不能跨轮复用，不能保存在记忆中，也不代表内容本身。\n"
             f"当前输入中的临时标号：{alias_text}"
         )
+
+    def _resolve_alias_descriptions(
+        self,
+        text: str,
+        state: AgentState,
+    ) -> str:
+        if not text:
+            return text
+
+        image_hash_to_alias = state.get("image_hash_to_alias") or {}
+        alias_to_image_hash = {v: k for k, v in image_hash_to_alias.items()}
+
+        def _replace_image_alias(match: re.Match[str]) -> str:
+            alias = match.group(0)
+            image_hash = alias_to_image_hash.get(alias)
+            if not image_hash:
+                return alias
+            description = self._memory_store.get_image_description(image_hash)
+            if not description:
+                return alias
+            return f"[image: {description}]"
+
+        text = IMAGE_ALIAS_PATTERN.sub(_replace_image_alias, text)
+
+        url_aliases = state.get("url_aliases") or {}
+        for alias, url in sorted(url_aliases.items(), key=lambda x: -len(x[0])):
+            if alias not in text:
+                continue
+            summary = self._memory_store.get_url_summary(url)
+            if not summary:
+                continue
+            text = text.replace(alias, f"[url <{url}>: {summary}]")
+
+        return text
 
     def _build_openviking_context_text(
         self,

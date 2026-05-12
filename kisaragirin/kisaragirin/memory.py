@@ -251,13 +251,14 @@ class SQLiteMemoryStore:
                     """,
                     (conversation_id, "user", user_message, now),
                 )
-                self._conn.execute(
-                    """
-                    INSERT INTO short_term_memory (conversation_id, role, content, created_at)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (conversation_id, "assistant", assistant_reply, assistant_time),
-                )
+                if assistant_reply:
+                    self._conn.execute(
+                        """
+                        INSERT INTO short_term_memory (conversation_id, role, content, created_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (conversation_id, "assistant", assistant_reply, assistant_time),
+                    )
                 for image_index, image_hash in enumerate(user_image_hashes or (), start=1):
                     normalized_hash = str(image_hash).strip().lower()
                     if not normalized_hash:

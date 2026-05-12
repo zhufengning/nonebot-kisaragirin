@@ -172,6 +172,7 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         str(getattr(output, "content", "") or "").strip()
         for output in delivered_outputs
         if str(getattr(output, "content", "") or "").strip()
+        and str(getattr(output, "content", "") or "").strip() != "bot选择沉默"
     ]
     delivered_reply_text = "\n\n".join(delivered_reply_blocks).strip()
 
@@ -237,18 +238,21 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         openviking_user_message = str(
             state.get("user_storage_message", state.get("user_message", "")) or ""
         )
-    openviking_user_message = agent._build_openviking_context_text(
-        state,
-        base_message=openviking_user_message,
-        base_label="USER-MESSAGE",
+    openviking_user_message = agent._resolve_alias_descriptions(
+        openviking_user_message, state
     )
+
+    openviking_assistant_reply = agent._resolve_alias_descriptions(
+        delivered_reply_text, state
+    )
+
     openviking_commit_status = "disabled"
     openviking_tool_events = state.get("tool_events") or []
     try:
         commit_result = agent._commit_openviking_turn(
             conversation_id=state["conversation_id"],
             user_message=openviking_user_message,
-            assistant_reply=delivered_reply_text,
+            assistant_reply=openviking_assistant_reply,
             tool_events=list(openviking_tool_events),
         )
         openviking_commit_status = str(commit_result.get("status", "committed"))
