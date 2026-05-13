@@ -38,6 +38,7 @@ PLUGIN_CONFIG = PluginConfig(
             base_url="https://api.siliconflow.cn/v1",
             api_key="sk-",
             model="Qwen/Qwen3-8B",
+            max_retries=4,
             extra_body={"enable_thinking": False},
         ),
         ModelConfig(

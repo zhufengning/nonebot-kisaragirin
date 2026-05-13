@@ -18,6 +18,7 @@ class ModelConfig:
     provider: str = "openai"
     temperature: float = 0.2
     timeout: float | None = 60.0
+    max_retries: int = 4
     extra_body: dict[str, object] | None = None
     client_kwargs: dict[str, object] = field(default_factory=dict)
     model_kwargs: dict[str, object] = field(default_factory=dict)

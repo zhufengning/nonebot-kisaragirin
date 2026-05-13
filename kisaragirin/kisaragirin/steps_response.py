@@ -191,36 +191,50 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         SystemMessage(content=agent._system_prompt("memory")),
         HumanMessage(content=memory_input),
     ]
-    msg = memory_model.invoke(messages)
 
-    parsed = agent._parse_memory_json(agent._message_to_text(msg.content))
-    new_long_term = agent._normalize_memory_text(
-        parsed.get("long_term_memory"),
-        fallback=state.get("long_term_memory", ""),
-    )
+    new_long_term = ""
     memory_compacted = False
-    if len(new_long_term) > 2000:
-        compact_input = (
-            f"{MEMORY_JSON_INSTRUCTION}\n\n"
-            "你的记忆太长了，需要精简到2000字符以内。\n\n"
-            "[CURRENT-LONG-TERM-MEMORY]\n"
-            f"{new_long_term}"
-        )
-        compact_messages = [
-            SystemMessage(content=agent._system_prompt("memory")),
-            HumanMessage(content=compact_input),
-        ]
-        compact_msg = memory_model.invoke(compact_messages)
-        compact_parsed = agent._parse_memory_json(
-            agent._message_to_text(compact_msg.content)
-        )
+    long_term_memory_updated = False
+    memory_update_error = ""
+    try:
+        msg = memory_model.invoke(messages)
+        parsed = agent._parse_memory_json(agent._message_to_text(msg.content))
         new_long_term = agent._normalize_memory_text(
-            compact_parsed.get("long_term_memory"),
-            fallback=new_long_term,
+            parsed.get("long_term_memory"),
+            fallback=state.get("long_term_memory", ""),
         )
         if len(new_long_term) > 2000:
-            new_long_term = new_long_term[:2000]
-        memory_compacted = True
+            compact_input = (
+                f"{MEMORY_JSON_INSTRUCTION}\n\n"
+                "你的记忆太长了，需要精简到2000字符以内。\n\n"
+                "[CURRENT-LONG-TERM-MEMORY]\n"
+                f"{new_long_term}"
+            )
+            compact_messages = [
+                SystemMessage(content=agent._system_prompt("memory")),
+                HumanMessage(content=compact_input),
+            ]
+            compact_msg = memory_model.invoke(compact_messages)
+            compact_parsed = agent._parse_memory_json(
+                agent._message_to_text(compact_msg.content)
+            )
+            new_long_term = agent._normalize_memory_text(
+                compact_parsed.get("long_term_memory"),
+                fallback=new_long_term,
+            )
+            if len(new_long_term) > 2000:
+                new_long_term = new_long_term[:2000]
+            memory_compacted = True
+        long_term_memory_updated = True
+    except Exception as exc:
+        memory_update_error = str(exc)
+        agent._logger.warning(
+            "Memory LLM update failed for conversation %s: %s",
+            state["conversation_id"],
+            exc,
+        )
+        new_long_term = str(state.get("long_term_memory") or "")
+
     agent._memory_store.persist_turn(
         conversation_id=state["conversation_id"],
         long_term_memory=new_long_term,
@@ -266,12 +280,14 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
     attachment = (
         "[MEMORY-UPDATE]\n"
-        "long_term_memory_updated=true\n"
+        f"long_term_memory_updated={'true' if long_term_memory_updated else 'false'}\n"
         f"long_term_memory_compacted={'true' if memory_compacted else 'false'}\n"
         "short_term_memory_appended=user+assistant\n"
         f"openviking_commit={openviking_commit_status}\n"
         f"openviking_tool_events={len(openviking_tool_events)}"
     )
+    if memory_update_error:
+        attachment += f"\nerror={memory_update_error}"
     agent._log_step_debug(
         state,
         "memory",

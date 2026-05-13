@@ -61,6 +61,7 @@ class _OpenVikingClientProtocol(Protocol):
         created_at: str | None = None,
     ) -> Any: ...
     async def commit_session(self, session_id: str) -> Any: ...
+    def rm(self, uri: str, *, recursive: bool = False) -> Any: ...
 
 
 @dataclass(slots=True, frozen=True)
@@ -160,30 +161,53 @@ class OpenVikingBridge:
             except Exception as exc:
                 self._logger.warning("OpenViking close failed: %s", exc)
 
+    def _fetch_contexts(self, conversation_id: str, query: str) -> list[_OpenVikingContextProtocol]:
+        client = self._client_for_conversation(conversation_id)
+        session = self._session(conversation_id)
+        result = self._run_maybe_awaitable(
+            client.search(
+                query=query,
+                session=session,
+                limit=max(1, int(self._config.search_limit)),
+            )
+        )
+        return self._extract_contexts(result)
+
     def search_memories(self, conversation_id: str, query: str) -> str:
         if not self.enabled:
             return ""
         normalized_query = str(query or "").strip()
         if not normalized_query:
             return "[OPENVIKING-MEMORY]\n(empty)"
+
+        def _do_search() -> list[_OpenVikingContextProtocol]:
+            return self._fetch_contexts(conversation_id, normalized_query)
+
         try:
-            client = self._client_for_conversation(conversation_id)
-            session = self._session(conversation_id)
-            result = self._run_maybe_awaitable(
-                client.search(
-                    query=normalized_query,
-                    session=session,
-                    limit=max(1, int(self._config.search_limit)),
-                )
-            )
-            contexts = self._extract_contexts(result)
+            contexts = _do_search()
         except Exception as exc:
-            self._logger.warning(
-                "OpenViking search failed for conversation %s: %s",
-                conversation_id,
-                exc,
-            )
-            return "[OPENVIKING-MEMORY]\n(search failed)"
+            if self._uses_conversation_user_keys and self._is_auth_error(exc):
+                self._logger.warning(
+                    "OpenViking auth error on search for conversation %s, regenerating key...",
+                    conversation_id,
+                )
+                self._refresh_conversation_key(conversation_id)
+                try:
+                    contexts = _do_search()
+                except Exception as retry_exc:
+                    self._logger.warning(
+                        "OpenViking search retry failed for conversation %s: %s",
+                        conversation_id,
+                        retry_exc,
+                    )
+                    return "[OPENVIKING-MEMORY]\n(search failed)"
+            else:
+                self._logger.warning(
+                    "OpenViking search failed for conversation %s: %s",
+                    conversation_id,
+                    exc,
+                )
+                return "[OPENVIKING-MEMORY]\n(search failed)"
 
         if not contexts:
             return "[OPENVIKING-MEMORY]\n(empty)"
@@ -206,6 +230,46 @@ class OpenVikingBridge:
             blocks.append("(empty)")
         return "\n\n".join(blocks)
 
+    def search_raw(
+        self, conversation_id: str, query: str
+    ) -> list[dict[str, str]]:
+        if not self.enabled:
+            return []
+        normalized_query = str(query or "").strip()
+        if not normalized_query:
+            return []
+        try:
+            contexts = self._fetch_contexts(conversation_id, normalized_query)
+        except Exception as exc:
+            if self._uses_conversation_user_keys and self._is_auth_error(exc):
+                self._logger.warning(
+                    "OpenViking auth error on search for conversation %s, regenerating key...",
+                    conversation_id,
+                )
+                self._refresh_conversation_key(conversation_id)
+                contexts = self._fetch_contexts(conversation_id, normalized_query)
+            else:
+                raise
+        results: list[dict[str, str]] = []
+        for context in contexts:
+            uri = str(getattr(context, "uri", "") or "").strip()
+            abstract = self._normalize_text(
+                getattr(context, "abstract", None)
+                or getattr(context, "overview", None)
+                or getattr(context, "content", None)
+                or ""
+            )
+            if not abstract and not uri:
+                continue
+            results.append({"uri": uri, "abstract": abstract})
+        return results
+
+    def delete_resource(self, conversation_id: str, uri: str) -> None:
+        if not self.enabled:
+            return
+        client = self._client_for_conversation(conversation_id)
+        self._run_maybe_awaitable(client.rm(uri=uri, recursive=False))
+
     def commit_turn(
         self,
         *,
@@ -217,25 +281,53 @@ class OpenVikingBridge:
         if not self.enabled:
             return {"status": "disabled"}
 
-        session = self._session(conversation_id)
-        user_parts = [self._build_text_part(str(user_message or ""))]
-        assistant_text = str(assistant_reply or "").strip()
-        tool_text = self._render_tool_events(tool_events)
-        if tool_text:
-            assistant_text = (
-                f"{assistant_text}\n\n{tool_text}".strip()
-                if assistant_text
-                else tool_text
-            )
-        assistant_parts = [self._build_text_part(assistant_text)]
+        def _do_commit() -> Any:
+            session = self._session(conversation_id)
+            user_parts = [self._build_text_part(str(user_message or ""))]
+            assistant_text = str(assistant_reply or "").strip()
+            tool_text = self._render_tool_events(tool_events)
+            if tool_text:
+                assistant_text = (
+                    f"{assistant_text}\n\n{tool_text}".strip()
+                    if assistant_text
+                    else tool_text
+                )
+            assistant_parts = [self._build_text_part(assistant_text)]
 
-        self._run_maybe_awaitable(
-            session.add_message(role="user", parts=user_parts)
-        )
-        self._run_maybe_awaitable(
-            session.add_message(role="assistant", parts=assistant_parts)
-        )
-        result = self._run_maybe_awaitable(session.commit())
+            self._run_maybe_awaitable(
+                session.add_message(role="user", parts=user_parts)
+            )
+            self._run_maybe_awaitable(
+                session.add_message(role="assistant", parts=assistant_parts)
+            )
+            return self._run_maybe_awaitable(session.commit())
+
+        try:
+            result = _do_commit()
+        except Exception as exc:
+            if self._uses_conversation_user_keys and self._is_auth_error(exc):
+                self._logger.warning(
+                    "OpenViking auth error on commit for conversation %s, regenerating key...",
+                    conversation_id,
+                )
+                self._refresh_conversation_key(conversation_id)
+                try:
+                    result = _do_commit()
+                except Exception as retry_exc:
+                    self._logger.warning(
+                        "OpenViking commit retry failed for conversation %s: %s",
+                        conversation_id,
+                        retry_exc,
+                    )
+                    return {"status": "failed", "error": str(retry_exc)}
+            else:
+                self._logger.warning(
+                    "OpenViking commit failed for conversation %s: %s",
+                    conversation_id,
+                    exc,
+                )
+                return {"status": "failed", "error": str(exc)}
+
         if isinstance(result, dict):
             return result
         return {"status": "committed"}
@@ -395,6 +487,30 @@ class OpenVikingBridge:
         if not user_key:
             raise RuntimeError(f"OpenViking {action} response missing user_key")
         return user_key
+
+    def _refresh_conversation_key(self, conversation_id: str) -> None:
+        client = self._conversation_clients.pop(conversation_id, None)
+        if client is not None:
+            try:
+                self._run_maybe_awaitable(client.close())
+            except Exception:
+                pass
+        self._memory_store.delete_openviking_user_key(conversation_id)
+
+    @staticmethod
+    def _is_auth_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        indicators = (
+            "401",
+            "403",
+            "unauthorized",
+            "forbidden",
+            "invalid api key",
+            "api key invalid",
+            "authentication failed",
+            "auth failed",
+        )
+        return any(ind in text for ind in indicators)
 
     def _admin_api_request(
         self,

@@ -148,6 +148,14 @@ class SQLiteMemoryStore:
             )
             self._conn.commit()
 
+    def delete_openviking_user_key(self, conversation_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM openviking_user_keys WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            self._conn.commit()
+
     def get_long_term(self, conversation_id: str) -> str:
         with self._lock:
             row = self._conn.execute(

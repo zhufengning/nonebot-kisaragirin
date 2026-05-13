@@ -115,6 +115,22 @@
 - `reply_lite_check` 无论 `debug` 是否开启，都会输出 `LITE-CHECK` 信息日志，记录 attempt、检查器名、通过/失败结果；失败时会附带完整评语。
 - 每次完整回复结束后，`kisaragirin.agent` 会统一输出一条性能日志，包含实际运行节点的耗时、`reply_total`（回复产出完成耗时）与 `total`（整轮完成总耗时）。
 
+## 新增管理指令（ops）
+
+新增一条 ops 指令时，**不能只改 `ops.py`**，需要同时修改以下三处，否则 NoneBot 不会把消息路由到处理器：
+
+1. **`zfnbot/plugins/kisaragirin_onebot/ops.py`**
+   - 在 `COMMAND_PATTERN` 的正则里加入新指令名。
+   - 在 `COMMAND_HELP_TEXT` 里补充说明。
+   - 在 `handle_ops_command_event` 中新增分支逻辑。
+
+2. **`zfnbot/plugins/kisaragirin_onebot/__init__.py`**
+   - 在 `on_regex` 的 pattern 中加入新指令名，否则消息不会进入 `on_ops_cmd` handler。
+   - 同步更新 `PluginMetadata.usage`。
+
+3. **`kisaragirin/kisaragirin/agent.py`**（如需要）
+   - 若指令需要调用 Agent 能力（如读写记忆、OpenViking 操作等），在 `KisaragiAgent` 中暴露对应方法，然后在 `ops.py` 中通过 `_get_group_agent(group_id)` 调用。
+
 ## 运行方式（本地）
 
 - 安装依赖：`uv sync`

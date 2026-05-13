@@ -887,6 +887,20 @@ class KisaragiAgent:
     def clear_openviking_user_keys(self) -> int:
         return self._memory_store.clear_openviking_user_keys()
 
+    def get_openviking_user_key(self, conversation_id: str) -> str | None:
+        cached = self._memory_store.get_openviking_user_key(conversation_id)
+        if cached is None:
+            return None
+        return cached[2]
+
+    def ov_search_memories(
+        self, conversation_id: str, query: str
+    ) -> list[dict[str, str]]:
+        return self._openviking.search_raw(conversation_id, query)
+
+    def ov_delete_resource(self, conversation_id: str, uri: str) -> None:
+        self._openviking.delete_resource(conversation_id, uri)
+
     def init_commit_openviking_long_term_memory(self, conversation_id: str) -> str:
         conversation_lock = self._get_conversation_lock(conversation_id)
         with conversation_lock:
@@ -1369,6 +1383,7 @@ class KisaragiAgent:
             "model": model_cfg.model,
             "temperature": model_cfg.temperature,
             "timeout": model_cfg.timeout,
+            "max_retries": model_cfg.max_retries,
             "extra_body": model_cfg.extra_body,
             "model_kwargs": dict(model_cfg.model_kwargs),
         }

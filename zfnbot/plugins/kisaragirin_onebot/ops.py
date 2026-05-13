@@ -11,7 +11,7 @@ from .state import _clear_group_queue, _get_group_agent
 
 OPS_SET = {int(user_id) for user_id in PLUGIN_CONFIG.ops}
 COMMAND_PATTERN = re.compile(
-    r"^/(clear|clears|clearl|help|ov_init_commit|clear_empty_cache|clearovk)(?:\s+.*)?$",
+    r"^/(clear|clears|clearl|help|ov_init_commit|clear_empty_cache|clearovk|ovkey|ovsearch|ovrm)(?:\s+.*)?$",
     re.IGNORECASE,
 )
 COMMAND_HELP_TEXT = (
@@ -22,8 +22,13 @@ COMMAND_HELP_TEXT = (
     "/clearl - 只清除长期记忆\n"
     "/ov_init_commit - 将当前群已有长期记忆手动提交一次到 OpenViking\n"
     "/clear_empty_cache - 清理 URL/图片缓存中内容为空的条目\n"
-    "/clearovk - 清空数据库中所有 OpenViking 用户的 api key"
+    "/clearovk - 清空数据库中所有 OpenViking 用户的 api key\n"
+    "/ovkey - 将本群 OpenViking user key 打印到服务器日志\n"
+    "/ovsearch <关键词> - 搜索本群 OpenViking 记忆\n"
+    "/ovrm <序号或URI> - 删除指定记忆（序号引用上一条 /ovsearch 结果）"
 )
+
+_LAST_OV_SEARCH_RESULTS: dict[int, list[str]] = {}
 
 
 def _is_ops_user(user_id: int) -> bool:
@@ -92,6 +97,65 @@ async def handle_ops_command_event(
     if command == "clearovk":
         count = await asyncio.to_thread(agent.clear_openviking_user_keys)
         await finish(f"已清空 {count} 条 OpenViking 用户 key。")
+        return
+    if command == "ovkey":
+        user_key = await asyncio.to_thread(agent.get_openviking_user_key, str(group_id))
+        if user_key is None:
+            await finish("本群当前没有缓存的 OpenViking user key。")
+            return
+        import logging
+        logging.getLogger("zfnbot.ops").info(
+            "OpenViking user key for group %s: %s", group_id, user_key
+        )
+        await finish("已打印到日志")
+        return
+    if command == "ovsearch":
+        text = event.get_plaintext().strip()
+        query = text[len("/ovsearch"):].strip()
+        if not query:
+            await finish("用法：/ovsearch <关键词>")
+            return
+        results = await asyncio.to_thread(agent.ov_search_memories, str(group_id), query)
+        if not results:
+            await finish("未找到相关记忆。")
+            return
+        lines: list[str] = []
+        uris: list[str] = []
+        for i, item in enumerate(results[:10], start=1):
+            uri = item.get("uri", "")
+            abstract = item.get("abstract", "")[:100]
+            lines.append(f"{i}. {abstract}")
+            if uri:
+                lines.append(f"   {uri}")
+            uris.append(uri)
+        _LAST_OV_SEARCH_RESULTS[group_id] = uris
+        await finish("\n".join(lines))
+        return
+    if command == "ovrm":
+        text = event.get_plaintext().strip()
+        arg = text[len("/ovrm"):].strip()
+        if not arg:
+            await finish("用法：/ovrm <序号> 或 /ovrm <URI>")
+            return
+        uri = ""
+        if arg.isdigit():
+            idx = int(arg) - 1
+            cached_uris = _LAST_OV_SEARCH_RESULTS.get(group_id, [])
+            if idx < 0 or idx >= len(cached_uris):
+                await finish("序号无效，请先使用 /ovsearch 查询。")
+                return
+            uri = cached_uris[idx]
+        else:
+            uri = arg
+        try:
+            await asyncio.to_thread(agent.ov_delete_resource, str(group_id), uri)
+        except Exception as exc:
+            await finish(f"删除失败：{exc}")
+            return
+        cached = _LAST_OV_SEARCH_RESULTS.get(group_id, [])
+        if uri in cached:
+            cached.remove(uri)
+        await finish("已删除。")
         return
 
     await _clear_group_queue(group_id)

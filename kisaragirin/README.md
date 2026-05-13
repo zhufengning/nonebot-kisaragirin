@@ -35,6 +35,7 @@ models = [
         base_url="https://api.openai.com/v1",
         api_key="YOUR_KEY",
         model="gpt-4o",
+        max_retries=4,
     ),
 ]
 
