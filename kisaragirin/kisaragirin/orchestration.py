@@ -56,6 +56,7 @@ DEFAULT_STEP_METADATA: dict[str, dict[str, StepMetadata]] = {
     },
     "tools": {
         "default": StepMetadata("tools", "tools"),
+        "lite": StepMetadata("tools", "tools_lite"),
     },
     "reply": {
         "default": reply_step_metadata("reply", "reply"),

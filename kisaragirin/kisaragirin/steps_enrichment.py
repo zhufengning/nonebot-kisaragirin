@@ -208,3 +208,78 @@ def run_tools(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         "tool_events": tool_events,
         "step_attachments": agent._set_attachment(state, "tools", appendix),
     }
+
+
+def run_tools_lite(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+    tool_model = agent._model(agent._config.step_models.tool).bind_tools(agent._tools)
+    tool_input = agent._tool_scoped_working_text(state)
+    messages: list[Any] = [
+        SystemMessage(content=agent._system_prompt("tool_lite")),
+        HumanMessage(content=tool_input),
+    ]
+
+    logs: list[str] = ["[TOOL-EXTRA-INFO]"]
+    tool_events: list[OpenVikingToolEvent] = []
+    used_tool = False
+
+    for round_idx in range(1, agent._config.max_tool_rounds + 1):
+        raw_ai_message = tool_model.invoke(messages)
+        ai_message = raw_ai_message
+        if isinstance(raw_ai_message, AIMessage):
+            ai_message = AIMessage(
+                content=agent._message_to_text(raw_ai_message.content),
+                tool_calls=raw_ai_message.tool_calls,
+            )
+        messages.append(ai_message)
+
+        tool_calls = ai_message.tool_calls if isinstance(ai_message, AIMessage) else []
+        if not tool_calls:
+            final_note = agent._message_to_text(ai_message.content)
+            if final_note.strip():
+                logs.append(f"[ROUND-{round_idx}-MODEL-NOTE]\n{final_note.strip()}")
+            break
+
+        used_tool = True
+        for call_idx, tool_call in enumerate(tool_calls, start=1):
+            tool_name = tool_call.get("name", "")
+            tool_args = tool_call.get("args", {})
+            tool_id = tool_call.get("id", f"round-{round_idx}-call-{call_idx}")
+
+            tool_output = agent._invoke_tool(tool_name, tool_args)
+            if len(tool_output) > agent._config.max_tool_output_chars:
+                tool_output = (
+                    tool_output[: agent._config.max_tool_output_chars]
+                    + "\n...<truncated>"
+                )
+
+            logs.append(
+                f"[ROUND-{round_idx}-TOOL-{call_idx}] {tool_name}\n"
+                f"args={json.dumps(tool_args, ensure_ascii=False)}\n"
+                f"output:\n{tool_output}"
+            )
+            tool_events.append(
+                OpenVikingToolEvent(
+                    tool_name=str(tool_name or ""),
+                    tool_input=tool_args,
+                    tool_output=tool_output,
+                    success=not tool_output.startswith(
+                        f"Tool '{tool_name}' execution error:"
+                    )
+                    and tool_output != f"Tool '{tool_name}' is not available.",
+                )
+            )
+
+            messages.append(
+                ToolMessage(content=tool_output, tool_call_id=tool_id, name=tool_name)
+            )
+
+    if not used_tool:
+        logs.append("No tool was called.")
+
+    appendix = "\n\n".join(logs)
+    agent._log_step_debug(state, "tools_lite", appendix)
+    return {
+        "working_text": state["working_text"] + "\n\n" + appendix,
+        "tool_events": tool_events,
+        "step_attachments": agent._set_attachment(state, "tools_lite", appendix),
+    }

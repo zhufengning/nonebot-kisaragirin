@@ -44,8 +44,10 @@ from .prompts import (
     VISION_DESCRIPTION_PROMPT,
 )
 from .routing import (
+    DEFAULT_ROUTE_ID,
     EMPTY_GRAPH,
     ExecutionPlan,
+    LITE_CHAT_ROUTE_ID,
     RouteDecision,
     build_default_route_decision,
     build_execution_plan,
@@ -56,6 +58,7 @@ from .steps_core import run_openviking_recall, run_prepare
 from .steps_enrichment import (
     run_enrich_merge,
     run_tools,
+    run_tools_lite,
     run_urls,
     run_vision,
 )
@@ -382,6 +385,7 @@ class KisaragiAgent:
         max_reply_completed_ms = float(state.get("reply_completed_ms", 0.0) or 0.0)
 
         has_silence = False
+        default_silence_fallback: OutputEvent | None = None
         for route_index, route_id in enumerate(route_choices):
             execution_plan = self._resolve_execution_plan(
                 route_decision,
@@ -442,6 +446,15 @@ class KisaragiAgent:
                 aggregated_state["output_events"] = list(output_events)
             elif reply_text == "bot选择沉默":
                 has_silence = True
+                if route_id == DEFAULT_ROUTE_ID and len(route_choices) == 1:
+                    default_silence_fallback = OutputEvent(
+                        event_id=f"{route_id}:{route_index}",
+                        event_type="reply",
+                        route_id=route_id,
+                        content=reply_text,
+                        order=route_index,
+                        dedupe_key=f"{route_id}:{route_index}",
+                    )
 
             reply_completed_ms = route_result.get("reply_completed_ms")
             if isinstance(reply_completed_ms, (int, float)):
@@ -450,8 +463,103 @@ class KisaragiAgent:
                     float(reply_completed_ms),
                 )
 
-        if not output_events and has_silence:
-            output_events = [
+        # Fallback: when only default was selected and it chose silence,
+        # feed the silence output to lite_chat as if both routes were selected.
+        if (
+            default_silence_fallback is not None
+            and not any(evt.content != "bot选择沉默" for evt in output_events)
+        ):
+            output_events.append(default_silence_fallback)
+            aggregated_state["output_events"] = list(output_events)
+
+            lite_route_id = LITE_CHAT_ROUTE_ID
+            lite_execution_plan = self._resolve_execution_plan(
+                route_decision,
+                route_id=lite_route_id,
+                include_prelude=False,
+                include_route_selector=False,
+                include_finalize=False,
+            )
+            lite_reply_output_key = self._reply_output_key_for_execution_plan(
+                lite_execution_plan
+            )
+            lite_route_state: AgentState = {
+                **aggregated_state,
+                "route_choice": lite_route_id,
+                "active_route_id": lite_route_id,
+                "route_choices": list(route_choices) + [lite_route_id],
+                "working_text": self._route_scoped_working_text(
+                    aggregated_state, lite_route_id
+                ),
+                "execution_plan": lite_execution_plan,
+                "reply": "",
+                "reply_lite_attempt": 0,
+                "reply_lite_check_result": "",
+                "reply_lite_retry_feedback": "",
+                "output_events": list(output_events),
+                "delivered_outputs": [],
+                "tool_events": [],
+                "step_attachments": {},
+                "step_durations_ms": {},
+            }
+            lite_execution_graph = self._build_graph_for_execution_plan(
+                lite_execution_plan
+            )
+            lite_route_result = lite_execution_graph.invoke(lite_route_state)
+
+            lite_prefixed_attachments = self._prefix_state_map(
+                lite_route_result.get("step_attachments"),
+                prefix=lite_route_id,
+            )
+            lite_prefixed_durations = self._prefix_state_map(
+                lite_route_result.get("step_durations_ms"),
+                prefix=lite_route_id,
+            )
+            all_step_attachments.update(lite_prefixed_attachments)
+            for key, value in lite_prefixed_durations.items():
+                try:
+                    all_step_durations[key] = float(value)
+                except Exception:
+                    continue
+            all_tool_events.extend(lite_route_result.get("tool_events") or [])
+
+            lite_reply_text = ""
+            if lite_reply_output_key:
+                lite_reply_text = str(
+                    lite_route_result.get(lite_reply_output_key, "") or ""
+                ).strip()
+            if lite_reply_text and lite_reply_text != "bot选择沉默":
+                lite_output_event = OutputEvent(
+                    event_id=f"{lite_route_id}:fallback",
+                    event_type="reply",
+                    route_id=lite_route_id,
+                    content=lite_reply_text,
+                    order=len(route_choices),
+                    dedupe_key=f"{lite_route_id}:fallback",
+                )
+                output_events.append(lite_output_event)
+                aggregated_state["output_events"] = list(output_events)
+            elif lite_reply_text == "bot选择沉默":
+                has_silence = True
+
+            lite_reply_completed_ms = lite_route_result.get("reply_completed_ms")
+            if isinstance(lite_reply_completed_ms, (int, float)):
+                max_reply_completed_ms = max(
+                    max_reply_completed_ms,
+                    float(lite_reply_completed_ms),
+                )
+
+        # Strip the temporary default silence event if lite produced a real reply.
+        final_output_events = [
+            evt
+            for evt in output_events
+            if not (evt.route_id == DEFAULT_ROUTE_ID and evt.content == "bot选择沉默")
+        ] if any(evt.content != "bot选择沉默" for evt in output_events) else list(
+            output_events
+        )
+
+        if not final_output_events and has_silence:
+            final_output_events = [
                 OutputEvent(
                     event_id="silence",
                     event_type="reply",
@@ -466,8 +574,8 @@ class KisaragiAgent:
         aggregated_state["step_durations_ms"] = all_step_durations
         aggregated_state["tool_events"] = all_tool_events
         aggregated_state["reply_completed_ms"] = max_reply_completed_ms
-        aggregated_state["output_events"] = output_events
-        aggregated_state["reply"] = self._join_output_texts(output_events)
+        aggregated_state["output_events"] = final_output_events
+        aggregated_state["reply"] = self._join_output_texts(final_output_events)
         return aggregated_state
 
     def _route_scoped_working_text(self, state: AgentState, route_id: str) -> str:
@@ -506,10 +614,15 @@ class KisaragiAgent:
                 route_decision.route_processing_instructions.get(route_id, "").strip()
             )
 
-        parts = [
+        parts: list[str] = []
+        short_term_context = str(state.get("short_term_context", "") or "").strip()
+        if short_term_context:
+            parts.append(f"[SHORT-TERM-CONTEXT]\n{short_term_context}")
+
+        parts.append(
             "[ORIGINAL-INPUT]\n"
             f"{str(state.get('user_message_normalized', state.get('user_message', '')) or '').strip()}"
-        ]
+        )
 
         url_appendix = str(state.get("url_appendix", "") or "").strip()
         if url_appendix:
@@ -646,6 +759,7 @@ class KisaragiAgent:
             },
             "tools": {
                 "default": lambda state: run_tools(self, state),
+                "lite": lambda state: run_tools_lite(self, state),
             },
             "reply": {
                 "default": lambda state: run_reply(self, state),

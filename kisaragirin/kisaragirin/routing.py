@@ -84,6 +84,7 @@ DEFAULT_ROUTE_GRAPH = GraphSpec(
 
 LITE_CHAT_ROUTE_GRAPH = GraphSpec(
     nodes=(
+        GraphNodeSpec(node_id="tools_lite", phase="tools", variant="lite"),
         GraphNodeSpec(node_id="reply_lite_1", phase="reply", variant="lite"),
         GraphNodeSpec(node_id="reply_lite_check_1", phase="reply_lite_check"),
         GraphNodeSpec(node_id="reply_lite_2", phase="reply", variant="lite"),
@@ -92,11 +93,12 @@ LITE_CHAT_ROUTE_GRAPH = GraphSpec(
         GraphNodeSpec(node_id="reply_lite_check_3", phase="reply_lite_check"),
     ),
     edges=(
+        ("tools_lite", "reply_lite_1"),
         ("reply_lite_1", "reply_lite_check_1"),
         ("reply_lite_2", "reply_lite_check_2"),
         ("reply_lite_3", "reply_lite_check_3"),
     ),
-    entry_node_ids=("reply_lite_1",),
+    entry_node_ids=("tools_lite",),
     exit_node_ids=(
         "reply_lite_check_1",
         "reply_lite_check_2",
