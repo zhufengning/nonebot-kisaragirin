@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from kisaragirin import CrawlerConfig, ModelConfig, OpenVikingConfig, StepModelIds
+from kisaragirin import CrawlerConfig, ModelConfig, OpenVikingConfig, StepFallbackPools, StepModelIds
 
 from zfnbot.plugins.kisaragirin_onebot.config_schema import (
     GroupConfig,
@@ -38,7 +38,6 @@ PLUGIN_CONFIG = PluginConfig(
             base_url="https://api.siliconflow.cn/v1",
             api_key="sk-",
             model="Qwen/Qwen3-8B",
-            max_retries=4,
             extra_body={"enable_thinking": False},
         ),
         ModelConfig(
@@ -66,11 +65,15 @@ PLUGIN_CONFIG = PluginConfig(
         reply="kimi",
         memory="kimi",
     ),
+    step_fallbacks=StepFallbackPools(),
+    max_retries=3,
     ops=(123456789,),
     groups={
         1234567890: GroupConfig(
             persona="""你是一只猫娘""",
             fixed_memory="""这里是一些固定的记忆，会被注入到对话上下文中""",
+            # 可选：屏蔽指定 QQ 号的所有发言
+            # blacklist=(987654321, 111222333),
         ),
     },
 )

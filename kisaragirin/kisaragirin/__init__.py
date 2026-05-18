@@ -9,6 +9,7 @@ from .config import (
     ModelConfig,
     OutputEvent,
     PromptConfig,
+    StepFallbackPools,
     StepModelIds,
 )
 from .openviking import OpenVikingConfig
@@ -38,6 +39,7 @@ __all__ = [
     "OpenVikingConfig",
     "PromptConfig",
     "RouteDecision",
+    "StepFallbackPools",
     "StepModelIds",
     "reply_step_metadata",
 ]

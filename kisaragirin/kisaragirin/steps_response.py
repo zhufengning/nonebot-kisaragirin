@@ -8,22 +8,21 @@ from .prompts import MEMORY_JSON_INSTRUCTION
 from .reply_lite_checks import DEFAULT_LITE_REPLY_CHECKERS
 
 
-def _reply_model(agent: Any, *, lite: bool = False):
+def _reply_step(agent: Any, *, lite: bool = False) -> str:
     if lite:
         lite_model_id = str(getattr(agent._config.step_models, "lite_reply", "") or "").strip()
         if lite_model_id:
-            return agent._model(lite_model_id)
-    return agent._model(agent._config.step_models.reply)
+            return "lite_reply"
+    return "reply"
 
 
 def _run_reply(agent: Any, state: dict[str, Any], *, step_name: str = "reply") -> dict[str, Any]:
-    model = _reply_model(agent)
     messages = [
         SystemMessage(content=agent._system_prompt("reply")),
         HumanMessage(content=state["working_text"]),
     ]
     agent._log_model_messages(state, f"{step_name}.input_first", messages)
-    reply_msg = model.invoke(messages)
+    reply_msg = agent._invoke_model(step_name, messages)
     reply_text = agent._message_to_text(reply_msg.content)
     attachment = f"[{step_name.upper()}]\n" + reply_text
     agent._log_step_debug(state, step_name, attachment)
@@ -52,14 +51,14 @@ def run_reply_lite(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
             "重新生成一条新的最终回复。不要解释修改过程，不要引用报错内容。"
         )
 
-    model = _reply_model(agent, lite=True)
+    step = _reply_step(agent, lite=True)
     messages = [
         SystemMessage(content=agent._system_prompt("reply_lite")),
         HumanMessage(content=reply_input),
     ]
     if attempt == 1:
         agent._log_model_messages(state, "reply_lite.input_first", messages)
-    reply_msg = model.invoke(messages)
+    reply_msg = agent._invoke_model(step, messages)
     reply_text = agent._message_to_text(reply_msg.content)
     attachment = f"[REPLY_LITE][attempt={attempt}]\n" + reply_text
     agent._log_step_debug(state, "reply_lite", attachment)
@@ -176,8 +175,6 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     ]
     delivered_reply_text = "\n\n".join(delivered_reply_blocks).strip()
 
-    memory_model = agent._model(agent._config.step_models.memory)
-
     memory_input = (
         f"{MEMORY_JSON_INSTRUCTION}\n\n"
         "[PREVIOUS-LONG-TERM-MEMORY]\n"
@@ -197,7 +194,7 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     long_term_memory_updated = False
     memory_update_error = ""
     try:
-        msg = memory_model.invoke(messages)
+        msg = agent._invoke_model("memory", messages)
         parsed = agent._parse_memory_json(agent._message_to_text(msg.content))
         new_long_term = agent._normalize_memory_text(
             parsed.get("long_term_memory"),
@@ -214,7 +211,7 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
                 SystemMessage(content=agent._system_prompt("memory")),
                 HumanMessage(content=compact_input),
             ]
-            compact_msg = memory_model.invoke(compact_messages)
+            compact_msg = agent._invoke_model("memory", compact_messages)
             compact_parsed = agent._parse_memory_json(
                 agent._message_to_text(compact_msg.content)
             )

@@ -18,6 +18,21 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from .config import PLUGIN_CONFIG
 from .payload import MessageData, MessageSegmentData, SegmentType
 
+try:
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+except Exception:
+    pillow_heif = None  # type: ignore[misc]
+    logger.debug("pillow-heif not available, HEIC/HEIF support disabled")
+
+SUPPORTED_IMAGE_MIME_TYPES = frozenset({
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/jpg",
+})
+
 AT_TEXT_PATTERNS = (
     re.compile(r"\[at:qq=(\d+)\]"),
     re.compile(r"\[CQ:at,qq=(\d+)\]"),
@@ -284,9 +299,11 @@ def _finalize_image_segment(
     final_mime_type = mime_type
     final_name = normalized_name
 
-    # Vision models typically do not accept image/gif. Convert static GIFs
-    # (or animated ones whose frame extraction failed) to JPEG up-front.
-    if final_mime_type == "image/gif":
+    # Convert unsupported image formats (e.g. GIF, HEIC, HEIF, AVIF, BMP, TIFF)
+    # to JPEG up-front. Animated GIFs that produced sampled frames return early
+    # above, so this only affects static/fallback cases.
+    if final_mime_type.startswith("image/") and final_mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
+        original_mime_type = final_mime_type
         converted = _compress_image_to_limit(
             content,
             image_name=normalized_name,
@@ -295,14 +312,16 @@ def _finalize_image_segment(
         if converted is not None:
             final_content, final_mime_type, final_name = converted
             logger.info(
-                "gif converted to jpeg bytes_before={} bytes_after={} name={}",
+                "{} converted to jpeg bytes_before={} bytes_after={} name={}",
+                original_mime_type.replace("image/", ""),
                 len(content),
                 len(final_content),
                 final_name or normalized_name or "(unknown)",
             )
         else:
             logger.warning(
-                "gif to jpeg conversion failed, skip segment name={}",
+                "{} to jpeg conversion failed, skip segment name={}",
+                original_mime_type.replace("image/", ""),
                 normalized_name or "(unknown)",
             )
             return None

@@ -89,8 +89,10 @@ def build_agent_request(
     }
     yaml_text = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
     request_message = yaml_text
-    if message_format == "simple":
-        request_message = _render_simple_payload(payload_messages)
+    if message_format in ("simple", "simple-id"):
+        request_message = _render_simple_payload(
+            payload_messages, include_sender_id=(message_format == "simple-id")
+        )
     return ConversationRequest(
         conversation_id=conversation_id,
         message=request_message,
@@ -296,7 +298,9 @@ def _get_or_create_image_alias(
     return alias
 
 
-def _render_simple_payload(messages: list[dict[str, object]]) -> str:
+def _render_simple_payload(
+    messages: list[dict[str, object]], *, include_sender_id: bool = False
+) -> str:
     blocks: list[str] = []
     block_started_at: datetime | None = None
     for message in messages:
@@ -307,7 +311,9 @@ def _render_simple_payload(messages: list[dict[str, object]]) -> str:
             ):
             blocks.append(timestamp.strftime("%Y-%m-%d %H:%M"))
             block_started_at = timestamp
-        blocks.append(_render_simple_message(message))
+        blocks.append(
+            _render_simple_message(message, include_sender_id=include_sender_id)
+        )
     if not blocks:
         return "---\n---"
     return "---\n" + "\n---\n".join(blocks) + "\n---"
@@ -323,9 +329,13 @@ def _parse_sent_at_local(message: dict[str, object]) -> datetime | None:
         return None
 
 
-def _render_simple_message(message: dict[str, object]) -> str:
-    sender_name = _message_sender_name(message)
-    content, reference_lines = _render_message_content(message, reply_depth=1)
+def _render_simple_message(
+    message: dict[str, object], *, include_sender_id: bool = False
+) -> str:
+    sender_name = _message_sender_name(message, include_sender_id=include_sender_id)
+    content, reference_lines = _render_message_content(
+        message, reply_depth=1, include_sender_id=include_sender_id
+    )
     prefix = "(有人@我)" if bool(message.get("mentioned_bot")) else ""
     header = f"{prefix}[{sender_name}]:"
     if content:
@@ -341,6 +351,7 @@ def _render_message_content(
     message: dict[str, object],
     *,
     reply_depth: int,
+    include_sender_id: bool = False,
 ) -> tuple[str, list[str]]:
     inline_parts: list[str] = []
     reference_lines: list[str] = []
@@ -370,11 +381,17 @@ def _render_message_content(
                 )
                 continue
 
-            reference_lines.append(_render_reference_line(segment, reply_depth=reply_depth))
+            reference_lines.append(
+                _render_reference_line(
+                    segment, reply_depth=reply_depth, include_sender_id=include_sender_id
+                )
+            )
             continue
 
         if segment_type == "forward":
-            forward_lines = _render_forward_reference_lines(segment, reply_depth=reply_depth)
+            forward_lines = _render_forward_reference_lines(
+                segment, reply_depth=reply_depth, include_sender_id=include_sender_id
+            )
             if forward_lines:
                 reference_lines.extend(forward_lines)
                 continue
@@ -399,6 +416,7 @@ def _render_reference_line(
     reply_segment: dict[str, object],
     *,
     reply_depth: int,
+    include_sender_id: bool = False,
 ) -> str:
     nested = reply_segment.get("reply_to_message")
     reply_id = str(reply_segment.get("reply_to_message_id", "") or "").strip()
@@ -406,8 +424,14 @@ def _render_reference_line(
         return f"[ref {reply_id or 'unknown'}]：(unavailable)"
     nested_message = cast(dict[str, object], nested)
 
-    sender_name = _message_sender_name(nested_message)
-    content, _ = _render_message_content(nested_message, reply_depth=reply_depth - 1)
+    sender_name = _message_sender_name(
+        nested_message, include_sender_id=include_sender_id
+    )
+    content, _ = _render_message_content(
+        nested_message,
+        reply_depth=reply_depth - 1,
+        include_sender_id=include_sender_id,
+    )
     if not content:
         content = "(empty)"
     return f"[ref {sender_name}]：{content}"
@@ -417,6 +441,7 @@ def _render_forward_reference_lines(
     forward_segment: dict[str, object],
     *,
     reply_depth: int,
+    include_sender_id: bool = False,
 ) -> list[str]:
     raw_messages = forward_segment.get("forward_messages")
     if not isinstance(raw_messages, list) or not raw_messages:
@@ -427,25 +452,43 @@ def _render_forward_reference_lines(
         if not isinstance(raw_message, dict):
             continue
         message = cast(dict[str, object], raw_message)
-        sender_name = _message_sender_name(message)
-        content, _ = _render_message_content(message, reply_depth=reply_depth - 1)
+        sender_name = _message_sender_name(
+            message, include_sender_id=include_sender_id
+        )
+        content, _ = _render_message_content(
+            message,
+            reply_depth=reply_depth - 1,
+            include_sender_id=include_sender_id,
+        )
         if not content:
             content = "(empty)"
         lines.append(f"[forward {sender_name}]：{content}")
     return lines
 
 
-def _message_sender_name(message: dict[str, object]) -> str:
+def _message_sender_name(
+    message: dict[str, object], *, include_sender_id: bool = False
+) -> str:
     sender = message.get("sender")
     if not isinstance(sender, dict):
         return "unknown"
     sender_data = cast(dict[str, object], sender)
     name = str(sender_data.get("name", "") or "").strip()
-    if bool(sender_data.get("is_me")) and name:
+    is_me = bool(sender_data.get("is_me"))
+    sender_id = str(sender_data.get("id", "") or "").strip()
+    if include_sender_id:
+        if name:
+            parts = [name]
+            if is_me:
+                parts.append("(me)")
+            if sender_id:
+                parts.append(f"({sender_id})")
+            return "".join(parts)
+        return sender_id or "unknown"
+    if is_me and name:
         return f"{name}(me)"
     if name:
         return name
-    sender_id = str(sender_data.get("id", "") or "").strip()
     return sender_id or "unknown"
 
 

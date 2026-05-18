@@ -3,15 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from kisaragirin import CrawlerConfig, ModelConfig, OpenVikingConfig, StepModelIds
+from kisaragirin import CrawlerConfig, ModelConfig, OpenVikingConfig, StepFallbackPools, StepModelIds
 
-MessageFormat = Literal["yaml", "simple"]
+MessageFormat = Literal["yaml", "simple", "simple-id"]
 
 
 @dataclass(slots=True, frozen=True)
 class GroupConfig:
     persona: str
     fixed_memory: str = ""
+    blacklist: tuple[int, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -25,6 +26,8 @@ class ReplyTimingConfig:
 class PluginConfig:
     models: tuple[ModelConfig, ...]
     step_models: StepModelIds
+    step_fallbacks: StepFallbackPools = field(default_factory=StepFallbackPools)
+    max_retries: int = 3
     groups: dict[int, GroupConfig]
     message_format: MessageFormat = "yaml"
     short_term_turn_window: int = 12

@@ -115,7 +115,11 @@ async def handle_ops_command_event(
         if not query:
             await finish("用法：/ovsearch <关键词>")
             return
-        results = await asyncio.to_thread(agent.ov_search_memories, str(group_id), query)
+        try:
+            results = await asyncio.to_thread(agent.ov_search_memories, str(group_id), query)
+        except Exception as exc:
+            await finish(f"搜索失败：{exc}")
+            return
         if not results:
             await finish("未找到相关记忆。")
             return

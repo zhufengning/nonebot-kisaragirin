@@ -16,6 +16,8 @@
 ## 主要配置项
 
 - `models` / `step_models`：模型与步骤映射（其中 `step_models.lite_reply` 用于轻量回复路径，留空时回退到 `step_models.reply`）
+- `step_fallbacks`（`StepFallbackPools`）：每个 step 的 fallback 候选池，当主模型调用失败时从池子里**随机**捞一个备用模型重试；池子里可以包含主模型自身
+- `max_retries`：全局 fallback 重试次数上限，控制主模型失败后最多再随机捞多少次备用模型
 - `exa_api_key`：Exa API Key（启用 `exa_search`，并优先用于 `web_search`）
 - `brave_search_api_key`：Brave Search API Key（当 `exa_api_key` 为空时，回退用于 `web_search`）
 - `serpapi_api_key`：SerpApi Key（为空时不启用 `scholar_search` 工具）
@@ -25,7 +27,7 @@
   - 推荐改成 `root_api_key + account + conversation_user_prefix`：插件会为每个群自动创建独立 OpenViking user，把返回的 `user_key` 缓存在本地 SQLite，再按群隔离检索/提交记忆
   - 检索时不再额外限制 `target_uri`；是否隔离完全取决于当前群对应的 OpenViking user key
 - `groups`：群白名单 + 每群 persona
-- `message_format`：发送给 LLM 的消息格式；`yaml` 保留结构化层级，`simple` 渲染成接近 QQ 聊天记录的纯文本块
+- `message_format`：发送给 LLM 的消息格式；`yaml` 保留结构化层级，`simple` 渲染成接近 QQ 聊天记录的纯文本块，`simple-id` 与 `simple` 相同但在发送者昵称后追加 `(QQ号)`
 - `short_term_turn_window`：短期记忆保留轮数（按 user+assistant 成对窗口）
 - `image_max_upload_bytes`：单张图片传给模型前允许的最大字节数；超限时自动压缩到阈值内
 - `ops`：可执行管理指令的 QQ 号白名单（非 ops 执行会返回 `Access Denied`）
@@ -45,7 +47,9 @@
    - 若队列中有 @bot 的消息，则触发一次回复；
    - 回复会引用最后一条 @ 消息。
 6. 群内静默达到 `idle_start_minutes` 后，每分钟按递增概率抽卡决定是否回复。
-7. 开始回复时会先取当前队列快照并出队；成功回复后不会清空后续新进队消息，失败时会把快照消息回灌队列。
+7. 开始回复时会先取当前队列快照并出队；成功回复后不会清空后续新进队消息。失败后的处理策略：
+   - **`@` 模式**：回灌队列，但清除所有 `mentioned_bot` 标记避免再次触发 mention_quiet，同时 bot 会引用最后一条 @ 消息发送 `bot响应@失败`，视为已处理此次 @。
+   - **idle 模式**：回灌队列，但重置 `last_message_at` 并递增 `queue_version`，强制 scheduler 重新开始 idle 抽卡计时（`next_idle_minute_index = 1`）。
 8. 共享前段中，URL 总结与图片描述会并行执行；随后再检索一次 OpenViking 记忆，最后汇总进入路由与后续回复路径。
 9. 路由阶段会使用 `step_models.route` 指定的轻量模型输出路径数组；技术提问、技术文章分享、技术讨论、事实求证、需要工具或分析的内容进入 `default`，情绪化吐槽、闲聊、接梗等进入 `lite_chat`。同一轮消息可以同时命中两条路径。`default` 继续工具调用后回复，`lite_chat` 直接走轻量聊天路径，并优先使用 `step_models.lite_reply`；若未配置，则回退到 `step_models.reply`。
 10. 技术路径与休闲路径都会显式要求“只处理属于自己路径的消息，其余输入由其他路径处理”；若某条路径筛完后没有该它回复的内容，会输出 `bot选择沉默`，并取消该路径的对外发送。技术路径回复会限制为不超过 150 字的技术性内容。若本轮前面的路径已经产出回复，后面的路径会在输入中额外看到 `[THIS-TURN-ALREADY-SENT]`，把这些内容视为自己刚刚已经发出的消息，避免重复，必要时主动沉默。
@@ -59,8 +63,8 @@
 ## 输入给 Agent 的格式
 
 - `message_format=yaml` 时，发送给 `kisaragirin` 的 `ConversationRequest.message` 为 YAML。
-- `message_format=simple` 时，会在发送前把同一份 YAML 渲染成接近 QQ 聊天记录的纯文本：
-  - 每条消息渲染为 `[昵称]: 内容`，并用 `---` 分隔。
+- `message_format=simple` 与 `simple-id` 时，会在发送前把同一份 YAML 渲染成接近 QQ 聊天记录的纯文本：
+  - `simple` 下每条消息渲染为 `[昵称]: 内容`；`simple-id` 下渲染为 `[昵称(QQ号)]: 内容`，若消息来自 bot 自己则为 `[昵称(me)(QQ号)]: 内容`。消息之间用 `---` 分隔。
   - 若消息 `@bot`，会在最前面插入 `(有人@我)`。
   - reply 只展开 1 层，渲染成下一行缩进的 `  [ref 昵称]：内容`。
   - forward 若携带解析后的内容，也只展开 1 层；每条转发子消息各占一行，格式为 `  [forward 昵称]：内容`。

@@ -78,13 +78,13 @@ def _parse_route_choices(
 
 def run_route(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     route_model_id = str(getattr(agent._config.step_models, "route", "") or "").strip()
-    model = agent._model(route_model_id or agent._config.step_models.reply)
+    route_step_name = "route" if route_model_id else "reply"
     route_input = _build_route_input(agent, state)
     messages = [
         SystemMessage(content=ROUTE_PROMPT),
         HumanMessage(content=route_input),
     ]
-    route_msg = model.invoke(messages)
+    route_msg = agent._invoke_model(route_step_name, messages)
 
     route_decision = state.get("route_decision")
     if route_decision is None:

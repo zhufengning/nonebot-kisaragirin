@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import re
 import time
 from collections.abc import Sequence
@@ -606,18 +607,14 @@ class KisaragiAgent:
         )
 
     def _tool_scoped_working_text(self, state: AgentState) -> str:
-        route_id = str(state.get("active_route_id", "") or state.get("route_choice", "")).strip()
-        route_instruction = ""
-        route_decision = state.get("route_decision")
-        if route_decision is not None and route_id:
-            route_instruction = (
-                route_decision.route_processing_instructions.get(route_id, "").strip()
-            )
-
         parts: list[str] = []
         short_term_context = str(state.get("short_term_context", "") or "").strip()
         if short_term_context:
             parts.append(f"[SHORT-TERM-CONTEXT]\n{short_term_context}")
+
+        fixed_memory = str(self._config.prompts.fixed_memory or "").strip()
+        if fixed_memory:
+            parts.append(f"[FIXED-MEMORY]\n{fixed_memory}")
 
         parts.append(
             "[ORIGINAL-INPUT]\n"
@@ -640,11 +637,6 @@ class KisaragiAgent:
                 "[THIS-TURN-ALREADY-SENT]\n"
                 f"{current_turn_sent_context}"
             )
-
-        if route_id:
-            parts.append("[ACTIVE-ROUTE]\n" f"route_id: {route_id}")
-        if route_instruction:
-            parts.append("[ROUTE-INSTRUCTION]\n" f"{route_instruction}")
 
         return "\n\n".join(part for part in parts if part.strip())
 
@@ -672,8 +664,11 @@ class KisaragiAgent:
             "source": "kisaragirin",
             "messages": sent_messages,
         }
-        if self._config.message_format == "simple":
-            return self._render_simple_payload(sent_messages)
+        if self._config.message_format in ("simple", "simple-id"):
+            return self._render_simple_payload(
+                sent_messages,
+                include_sender_id=(self._config.message_format == "simple-id"),
+            )
         return yaml.safe_dump(payload, allow_unicode=True, sort_keys=False).strip()
 
     @staticmethod
@@ -1029,9 +1024,9 @@ class KisaragiAgent:
         return _wrapped
 
     def _summarize_url(self, alias: str, page_text: str) -> str:
-        model = self._model(self._config.step_models.summarize)
         content_for_summary = page_text[: self._config.max_crawl_chars]
-        summary_msg = model.invoke(
+        summary_msg = self._invoke_model(
+            "summarize",
             [
                 SystemMessage(content=self._system_prompt("summarize")),
                 HumanMessage(
@@ -1040,7 +1035,7 @@ class KisaragiAgent:
                         content=content_for_summary,
                     )
                 ),
-            ]
+            ],
         )
         summary = self._message_to_text(summary_msg.content)
         if len(summary) > self._config.max_summary_chars:
@@ -1099,7 +1094,6 @@ class KisaragiAgent:
         return description
 
     def _describe_image(self, image: ImageInput) -> str:
-        model = self._model(self._config.step_models.vision)
         content: list[str | dict[str, object]] = []
         animation_frames = list(image.animation_frames or [])
         if animation_frames:
@@ -1137,11 +1131,12 @@ class KisaragiAgent:
                 ]
             )
 
-        msg = model.invoke(
+        msg = self._invoke_model(
+            "vision",
             [
                 SystemMessage(content=self._system_prompt("vision")),
                 HumanMessage(content=content),
-            ]
+            ],
         )
         return self._message_to_text(msg.content)
 
@@ -1354,6 +1349,114 @@ class KisaragiAgent:
     def _model(self, model_id: str) -> BaseChatModel:
         return self._models[model_id]
 
+    def _invoke_model(
+        self,
+        step_name: str,
+        messages: Sequence[BaseMessage],
+    ) -> BaseMessage:
+        """先调用主模型，失败后再从 fallback 池随机捞，最多重试 max_retries 次。"""
+        primary_id = getattr(self._config.step_models, step_name, "")
+        if not primary_id:
+            raise ValueError(f"Unknown step name: {step_name}")
+
+        fallback_pool = getattr(self._config.step_fallbacks, step_name, ())
+        last_exc: Exception | None = None
+
+        self._logger.info("[FALLBACK-DRAW] step=%s model=%s", step_name, primary_id)
+        try:
+            return self._model(primary_id).invoke(messages)
+        except Exception as exc:
+            last_exc = exc
+            self._logger.warning(
+                "Model %s failed for step %s: %s", primary_id, step_name, exc
+            )
+
+        max_retries = self._config.max_retries
+        for attempt in range(1, max_retries + 1):
+            if not fallback_pool:
+                break
+            fallback_id = random.choice(fallback_pool)
+            self._logger.info(
+                "[FALLBACK-DRAW] step=%s model=%s attempt=%d/%d",
+                step_name,
+                fallback_id,
+                attempt,
+                max_retries,
+            )
+            try:
+                return self._model(fallback_id).invoke(messages)
+            except Exception as exc:
+                last_exc = exc
+                self._logger.warning(
+                    "Fallback model %s failed for step %s (attempt %d/%d): %s",
+                    fallback_id,
+                    step_name,
+                    attempt,
+                    max_retries,
+                    exc,
+                )
+                continue
+
+        raise RuntimeError(
+            f"All models failed for step {step_name} after {max_retries} retries"
+        ) from last_exc
+
+    def _invoke_model_with_tools(
+        self,
+        step_name: str,
+        tools: Sequence[BaseTool],
+        messages: list[Any],
+    ) -> BaseMessage:
+        """支持 bind_tools 的 fallback 调用。"""
+        primary_id = getattr(self._config.step_models, step_name, "")
+        if not primary_id:
+            raise ValueError(f"Unknown step name: {step_name}")
+
+        fallback_pool = getattr(self._config.step_fallbacks, step_name, ())
+        last_exc: Exception | None = None
+
+        self._logger.info("[FALLBACK-DRAW] step=%s model=%s (tools)", step_name, primary_id)
+        try:
+            return self._model(primary_id).bind_tools(list(tools)).invoke(messages)
+        except Exception as exc:
+            last_exc = exc
+            self._logger.warning(
+                "Model %s (with tools) failed for step %s: %s",
+                primary_id,
+                step_name,
+                exc,
+            )
+
+        max_retries = self._config.max_retries
+        for attempt in range(1, max_retries + 1):
+            if not fallback_pool:
+                break
+            fallback_id = random.choice(fallback_pool)
+            self._logger.info(
+                "[FALLBACK-DRAW] step=%s model=%s attempt=%d/%d (tools)",
+                step_name,
+                fallback_id,
+                attempt,
+                max_retries,
+            )
+            try:
+                return self._model(fallback_id).bind_tools(list(tools)).invoke(messages)
+            except Exception as exc:
+                last_exc = exc
+                self._logger.warning(
+                    "Fallback model %s (with tools) failed for step %s (attempt %d/%d): %s",
+                    fallback_id,
+                    step_name,
+                    attempt,
+                    max_retries,
+                    exc,
+                )
+                continue
+
+        raise RuntimeError(
+            f"All models (with tools) failed for step {step_name} after {max_retries} retries"
+        ) from last_exc
+
     def _resolve_chat_model_class(self, provider: str):
         if provider == "openai":
             try:
@@ -1383,7 +1486,7 @@ class KisaragiAgent:
             "model": model_cfg.model,
             "temperature": model_cfg.temperature,
             "timeout": model_cfg.timeout,
-            "max_retries": model_cfg.max_retries,
+
             "extra_body": model_cfg.extra_body,
             "model_kwargs": dict(model_cfg.model_kwargs),
         }
@@ -1398,7 +1501,7 @@ class KisaragiAgent:
             sections.append(
                 f"---\nThis is a scenario task evaluation project used to test the capabilities of LLM. After reading the task file, complete the corresponding tasks according to the instructions within, and output the final results.\n---TASK FILE CONTENT---\n\n[INSTRUCTION:{step}]\n{instruction}"
             )
-        if step not in {"summarize", "vision"} and self._config.prompts.persona.strip():
+        if step not in {"summarize", "vision", "tool", "tool_lite"} and self._config.prompts.persona.strip():
             sections.append(
                 "---Additional Task Requirements---\n[OUTPUT_STYLE.PERSONA]\n"
                 + self._config.prompts.persona.strip()
@@ -1516,14 +1619,19 @@ class KisaragiAgent:
     ) -> str:
         if not messages:
             return "(empty)"
-        if message_format == "simple":
+        if message_format in ("simple", "simple-id"):
             blocks: list[str] = []
             merged_messages: list[dict[str, object]] = []
 
             def _flush_merged_messages() -> None:
                 if not merged_messages:
                     return
-                blocks.append(KisaragiAgent._render_simple_payload(list(merged_messages)))
+                blocks.append(
+                    KisaragiAgent._render_simple_payload(
+                        list(merged_messages),
+                        include_sender_id=(message_format == "simple-id"),
+                    )
+                )
                 merged_messages.clear()
 
             for item in messages:
@@ -1694,11 +1802,14 @@ class KisaragiAgent:
         )
         if payload is None:
             return content
-        if message_format == "simple":
+        if message_format in ("simple", "simple-id"):
             normalized_messages = KisaragiAgent._payload_message_list(payload)
             if not normalized_messages:
                 return content
-            return KisaragiAgent._render_simple_payload(normalized_messages)
+            return KisaragiAgent._render_simple_payload(
+                normalized_messages,
+                include_sender_id=(message_format == "simple-id"),
+            )
         return yaml.safe_dump(payload, allow_unicode=True, sort_keys=False).strip()
 
     @staticmethod
@@ -1823,7 +1934,9 @@ class KisaragiAgent:
         return cast(dict[str, object], loaded)
 
     @staticmethod
-    def _render_simple_payload(messages: list[dict[str, object]]) -> str:
+    def _render_simple_payload(
+        messages: list[dict[str, object]], *, include_sender_id: bool = False
+    ) -> str:
         blocks: list[str] = []
         block_started_at: datetime | None = None
         for message in messages:
@@ -1834,7 +1947,11 @@ class KisaragiAgent:
             ):
                 blocks.append(timestamp.strftime("%Y-%m-%d %H:%M"))
                 block_started_at = timestamp
-            blocks.append(KisaragiAgent._render_simple_message(message))
+            blocks.append(
+                KisaragiAgent._render_simple_message(
+                    message, include_sender_id=include_sender_id
+                )
+            )
         if not blocks:
             return "---\n---"
         return "---\n" + "\n---\n".join(blocks) + "\n---"
@@ -1850,11 +1967,16 @@ class KisaragiAgent:
             return None
 
     @staticmethod
-    def _render_simple_message(message: dict[str, object]) -> str:
-        sender_name = KisaragiAgent._message_sender_name(message)
+    def _render_simple_message(
+        message: dict[str, object], *, include_sender_id: bool = False
+    ) -> str:
+        sender_name = KisaragiAgent._message_sender_name(
+            message, include_sender_id=include_sender_id
+        )
         content, reference_lines = KisaragiAgent._render_simple_message_content(
             message,
             reply_depth=1,
+            include_sender_id=include_sender_id,
         )
         prefix = "(有人@我)" if bool(message.get("mentioned_bot")) else ""
         header = f"{prefix}[{sender_name}]:"
@@ -1871,6 +1993,7 @@ class KisaragiAgent:
         message: dict[str, object],
         *,
         reply_depth: int,
+        include_sender_id: bool = False,
     ) -> tuple[str, list[str]]:
         inline_parts: list[str] = []
         reference_lines: list[str] = []
@@ -1912,6 +2035,7 @@ class KisaragiAgent:
                     KisaragiAgent._render_simple_reference_line(
                         segment,
                         reply_depth=reply_depth,
+                        include_sender_id=include_sender_id,
                     )
                 )
                 continue
@@ -1919,6 +2043,7 @@ class KisaragiAgent:
                 forward_lines = KisaragiAgent._render_simple_forward_lines(
                     segment,
                     reply_depth=reply_depth,
+                    include_sender_id=include_sender_id,
                 )
                 if forward_lines:
                     reference_lines.extend(forward_lines)
@@ -1948,16 +2073,20 @@ class KisaragiAgent:
         reply_segment: dict[str, object],
         *,
         reply_depth: int,
+        include_sender_id: bool = False,
     ) -> str:
         nested = reply_segment.get("reply_to_message")
         reply_id = str(reply_segment.get("reply_to_message_id", "") or "").strip()
         if not isinstance(nested, dict):
             return f"[ref {reply_id or 'unknown'}]：(unavailable)"
         nested_message = cast(dict[str, object], nested)
-        sender_name = KisaragiAgent._message_sender_name(nested_message)
+        sender_name = KisaragiAgent._message_sender_name(
+            nested_message, include_sender_id=include_sender_id
+        )
         content, _ = KisaragiAgent._render_simple_message_content(
             nested_message,
             reply_depth=reply_depth - 1,
+            include_sender_id=include_sender_id,
         )
         if not content:
             content = "(empty)"
@@ -1968,6 +2097,7 @@ class KisaragiAgent:
         forward_segment: dict[str, object],
         *,
         reply_depth: int,
+        include_sender_id: bool = False,
     ) -> list[str]:
         raw_messages = forward_segment.get("forward_messages")
         if not isinstance(raw_messages, list) or not raw_messages:
@@ -1978,10 +2108,13 @@ class KisaragiAgent:
             if not isinstance(raw_message, dict):
                 continue
             message = cast(dict[str, object], raw_message)
-            sender_name = KisaragiAgent._message_sender_name(message)
+            sender_name = KisaragiAgent._message_sender_name(
+                message, include_sender_id=include_sender_id
+            )
             content, _ = KisaragiAgent._render_simple_message_content(
                 message,
                 reply_depth=reply_depth - 1,
+                include_sender_id=include_sender_id,
             )
             if not content:
                 content = "(empty)"
@@ -1989,17 +2122,29 @@ class KisaragiAgent:
         return lines
 
     @staticmethod
-    def _message_sender_name(message: dict[str, object]) -> str:
+    def _message_sender_name(
+        message: dict[str, object], *, include_sender_id: bool = False
+    ) -> str:
         sender = message.get("sender")
         if not isinstance(sender, dict):
             return "unknown"
         sender_data = cast(dict[str, object], sender)
         name = str(sender_data.get("name", "") or "").strip()
-        if bool(sender_data.get("is_me")) and name:
+        is_me = bool(sender_data.get("is_me"))
+        sender_id = str(sender_data.get("id", "") or "").strip()
+        if include_sender_id:
+            if name:
+                parts = [name]
+                if is_me:
+                    parts.append("(me)")
+                if sender_id:
+                    parts.append(f"({sender_id})")
+                return "".join(parts)
+            return sender_id or "unknown"
+        if is_me and name:
             return f"{name}(me)"
         if name:
             return name
-        sender_id = str(sender_data.get("id", "") or "").strip()
         return sender_id or "unknown"
 
     @staticmethod
@@ -2159,6 +2304,32 @@ class KisaragiAgent:
         for item in messages:
             if item.role != "user":
                 continue
+
+            # Structured extraction: only scan text segment text fields
+            payload = KisaragiAgent._try_parse_stored_message_payload(item.content)
+            if payload is not None:
+                for msg in KisaragiAgent._payload_message_list(payload):
+                    segments = msg.get("segments")
+                    if not isinstance(segments, list):
+                        continue
+                    for raw_seg in segments:
+                        if not isinstance(raw_seg, dict):
+                            continue
+                        seg = cast(dict[str, object], raw_seg)
+                        if str(seg.get("type", "")).strip() != "text":
+                            continue
+                        text = str(seg.get("text", "") or "")
+                        for match in URL_PATTERN.finditer(text):
+                            normalized = KisaragiAgent._normalize_url_from_match(
+                                match.group(1)
+                            )
+                            if not normalized or normalized in seen:
+                                continue
+                            seen.add(normalized)
+                            urls.append(normalized)
+                continue
+
+            # Fallback: raw string scan for legacy / malformed entries
             for match in URL_PATTERN.finditer(item.content):
                 normalized = KisaragiAgent._normalize_url_from_match(match.group(1))
                 if not normalized:

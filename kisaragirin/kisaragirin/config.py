@@ -6,7 +6,7 @@ from typing import Literal, Mapping, Self, Sequence, TypedDict, Unpack
 from .openviking import OpenVikingConfig
 
 
-MessageFormat = Literal["yaml", "simple"]
+MessageFormat = Literal["yaml", "simple", "simple-id"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -18,7 +18,6 @@ class ModelConfig:
     provider: str = "openai"
     temperature: float = 0.2
     timeout: float | None = 60.0
-    max_retries: int = 4
     extra_body: dict[str, object] | None = None
     client_kwargs: dict[str, object] = field(default_factory=dict)
     model_kwargs: dict[str, object] = field(default_factory=dict)
@@ -33,6 +32,17 @@ class StepModelIds:
     memory: str
     route: str = ""
     lite_reply: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class StepFallbackPools:
+    summarize: tuple[str, ...] = ()
+    vision: tuple[str, ...] = ()
+    tool: tuple[str, ...] = ()
+    reply: tuple[str, ...] = ()
+    memory: tuple[str, ...] = ()
+    route: tuple[str, ...] = ()
+    lite_reply: tuple[str, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -68,6 +78,8 @@ class ImageInput:
 class AgentConfig:
     models: Mapping[str, ModelConfig]
     step_models: StepModelIds
+    step_fallbacks: StepFallbackPools = field(default_factory=StepFallbackPools)
+    max_retries: int = 3
     prompts: PromptConfig = field(default_factory=PromptConfig)
     openviking: OpenVikingConfig = field(default_factory=OpenVikingConfig)
     message_format: MessageFormat = "yaml"
@@ -88,6 +100,8 @@ class AgentConfig:
         cls,
         models: Sequence[ModelConfig],
         step_models: StepModelIds,
+        step_fallbacks: StepFallbackPools | None = None,
+        max_retries: int = 3,
         prompts: PromptConfig | None = None,
         **kwargs: Unpack[AgentConfigKwargs],
     ) -> Self:
@@ -95,6 +109,8 @@ class AgentConfig:
         return cls(
             models=model_map,
             step_models=step_models,
+            step_fallbacks=step_fallbacks or StepFallbackPools(),
+            max_retries=max_retries,
             prompts=prompts or PromptConfig(),
             **kwargs,
         )
@@ -114,6 +130,8 @@ class AgentConfigKwargs(TypedDict, total=False):
     max_crawl_chars: int
     max_summary_chars: int
     max_tool_output_chars: int
+    step_fallbacks: StepFallbackPools
+    max_retries: int
 
 
 @dataclass(slots=True)

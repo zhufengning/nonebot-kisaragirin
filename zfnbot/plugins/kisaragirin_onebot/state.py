@@ -69,6 +69,8 @@ def _get_group_agent(group_id: int) -> KisaragiAgent:
         "memory_db_path": PLUGIN_CONFIG.memory_db_path,
         "openviking": PLUGIN_CONFIG.openviking,
         "short_term_turn_window": PLUGIN_CONFIG.short_term_turn_window,
+        "max_retries": getattr(PLUGIN_CONFIG, "max_retries", 3),
+        "step_fallbacks": getattr(PLUGIN_CONFIG, "step_fallbacks", None),
     }
     if crawler_config is not None:
         agent_kwargs["crawler"] = crawler_config

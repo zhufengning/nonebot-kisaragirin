@@ -220,6 +220,9 @@ async def _try_reply(
         logger.exception("kisaragirin run failed in group {}", group_id)
         return False
     finally:
+        should_send_failure_notice = False
+        failure_notice_reference: int | None = None
+
         should_finalize_delivery_ids = list(delivered_output_ids)
         async with state.lock:
             if run_token is None or state.active_reply_token != run_token:
@@ -248,21 +251,36 @@ async def _try_reply(
                 )
                 return False
             if not sent_any and not cancelled and queue_snapshot:
-                logger.info(
-                    "reply not sent, requeue snapshot trigger={} group={} snapshot_size={} current_queue_size={}",
-                    trigger,
-                    group_id,
-                    len(queue_snapshot),
-                    len(state.queue),
-                )
-                state.queue.extend(queue_snapshot)
-                state.queue.sort(key=lambda item: (item.created_at, item.sequence))
+                if require_mention:
+                    for item in queue_snapshot:
+                        item.mentioned_bot = False
+                    state.queue.extend(queue_snapshot)
+                    state.queue.sort(key=lambda item: (item.created_at, item.sequence))
+                    state.last_message_at = time.time()
+                    should_send_failure_notice = True
+                    failure_notice_reference = mention_reference
+                else:
+                    state.queue.extend(queue_snapshot)
+                    state.queue.sort(key=lambda item: (item.created_at, item.sequence))
+                    state.last_message_at = time.time()
+                    state.queue_version += 1
             state.active_reply_token = None
             state.replying = False
             if state.queue:
                 _refresh_workers(group_id, state, state.queue_version)
             else:
                 state.last_message_at = 0.0
+
+        if should_send_failure_notice:
+            try:
+                bot = get_bot(bot_id)
+                message = Message()
+                if failure_notice_reference is not None:
+                    message.append(MessageSegment.reply(failure_notice_reference))
+                message.append(MessageSegment.text("bot响应@失败"))
+                await bot.send_group_msg(group_id=group_id, message=message)
+            except Exception:
+                logger.exception("send failure notice failed in group {}", group_id)
 
 
 async def _scheduler_worker(group_id: int) -> None:

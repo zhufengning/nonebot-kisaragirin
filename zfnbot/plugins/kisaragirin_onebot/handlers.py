@@ -47,6 +47,9 @@ async def handle_group_message_event(bot: Bot, event: MessageEvent) -> None:
     group_id = event.group_id
     if group_id not in PLUGIN_CONFIG.groups:
         return
+    group_config = PLUGIN_CONFIG.groups[group_id]
+    if event.user_id in group_config.blacklist:
+        return
     if _match_command(event.get_plaintext()) is not None:
         return
 

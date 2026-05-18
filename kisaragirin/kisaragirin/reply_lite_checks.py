@@ -149,8 +149,9 @@ def check_reply_lite_sentence_final_parenthetical(text: str) -> LiteReplyCheckRe
     )
 
 
-DEFAULT_LITE_REPLY_CHECKERS: tuple[LiteReplyChecker, ...] = (
-    check_reply_lite_opening_this,
-    check_reply_lite_parenthetical_blacklist,
-    check_reply_lite_sentence_final_parenthetical,
-)
+DEFAULT_LITE_REPLY_CHECKERS: tuple[LiteReplyChecker, ...] = ()
+# DEFAULT_LITE_REPLY_CHECKERS: tuple[LiteReplyChecker, ...] = (
+#     check_reply_lite_opening_this,
+#     check_reply_lite_parenthetical_blacklist,
+#     check_reply_lite_sentence_final_parenthetical,
+# )

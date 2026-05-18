@@ -19,6 +19,7 @@
 - 实际运行配置位于 `zfnbot/plugins/kisaragirin_onebot/config.py`。
 - `image_max_upload_bytes` 用于限制单张图片传给模型前的最大字节数；超限时会自动压缩，压不进阈值则跳过该图片。
 - 支持可选接入 OpenViking（默认配置示例为 `http://localhost:1933`），用于管理增长型外部记忆。
+- **模型 fallback**：每个 step 在 `StepFallbackPools` 中配置独立的 fallback 池子，主模型异常时从池子里**随机**捞备用模型重试；`max_retries` 为全局配置，控制最多重试次数。fallback 池子里可以包含主模型自身。
 
 ## 启动
 

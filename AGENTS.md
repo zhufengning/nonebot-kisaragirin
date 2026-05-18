@@ -68,7 +68,9 @@
 - 全部路径执行完成后，插件按顺序逐条发送非沉默回复；只有发送成功的路径回复才会在共享 `memory` 收尾阶段一起写回记忆。`reply_lite` 的中间草稿与检查评语不会写入短期记忆，短期记忆只记录最终实际发送的回复。
   - 在 `memory` 完成前，当前群仍保持 replying 状态，下一次回复触发会继续等待/跳过。
   - 若整轮都沉默，不会回灌队列。
-  - 若尚未发送任何回复就失败，会把快照消息回灌队列，避免丢消息。
+  - **Graph 执行失败后的回灌策略**：
+    - **idle 模式**：消息回灌队列，但 `queue_version += 1` 并重置 `last_message_at` 为当前时间，强制 scheduler 重新开始 idle 抽卡计时（`next_idle_minute_index = 1`）。
+    - **`@` 模式**：消息回灌队列，但**清除所有 `mentioned_bot` 标记**，避免再次触发 mention_quiet；同时 bot 会引用原消息发送 `bot响应@失败`，视为已处理此次 @。
   - 若部分路径已发送成功后才失败，为避免重复发送，不会回灌整轮快照。
   - 若回复成功，不再“全量清空队列”；新进队的消息继续等待下一轮触发。
   - 若当前已有回复在执行：`@` 触发会等待，非 `@` 触发会跳过。
@@ -107,6 +109,7 @@
 - `ops` 为管理指令执行权限白名单（QQ 号）。
 - `exa_api_key` 用于启用 Exa 的 `web_search`；若为空可回退 `brave_search_api_key`。
 - 不再依赖 `.env` 作为插件主配置来源。
+- **模型 fallback**：每个 step（节点）在 `AgentConfig.step_fallbacks`（`StepFallbackPools`）中配置独立的 fallback 池子。当主模型调用失败（超时/限流/异常）时，会从该 step 的 fallback 池子里**随机**捞一个备用模型重试，最多重试 `AgentConfig.max_retries` 次（全局配置）。所有 LLM 调用点（`summarize`、`vision`、`reply`、`reply_lite`、`memory`、`tool`、`route` 等）均已接入该机制。fallback 池子里可以包含主模型自身。
 
 ## 日志行为
 
