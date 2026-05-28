@@ -56,37 +56,40 @@ async def _try_reply(
     trigger: str,
     require_mention: bool,
     use_mention_reference: bool,
+    forced_snapshot: list[QueuedMessage] | None = None,
 ) -> bool:
     state = _get_group_state(group_id)
     queue_snapshot: list[QueuedMessage] = []
     mention_reference: int | None = None
     bot_id = ""
     run_token: int | None = None
+    wait_logged = False
     while True:
         should_wait = False
         async with state.lock:
-            if state.queue_version != expected_queue_version:
-                if require_mention:
-                    logger.debug(
-                        "mention trigger adjusted expected_version group={} trigger={} old_expected={} new_expected={}",
-                        group_id,
-                        trigger,
-                        expected_queue_version,
-                        state.queue_version,
-                    )
-                    expected_queue_version = state.queue_version
-                else:
-                    logger.debug(
-                        "skip reply trigger={} group={} reason=stale_event expected_version={} actual_version={}",
-                        trigger,
-                        group_id,
-                        expected_queue_version,
-                        state.queue_version,
-                    )
+            if forced_snapshot is None:
+                if state.queue_version != expected_queue_version:
+                    if require_mention:
+                        logger.debug(
+                            "mention trigger adjusted expected_version group={} trigger={} old_expected={} new_expected={}",
+                            group_id,
+                            trigger,
+                            expected_queue_version,
+                            state.queue_version,
+                        )
+                        expected_queue_version = state.queue_version
+                    else:
+                        logger.debug(
+                            "skip reply trigger={} group={} reason=stale_event expected_version={} actual_version={}",
+                            trigger,
+                            group_id,
+                            expected_queue_version,
+                            state.queue_version,
+                        )
+                        return False
+                if not state.queue:
+                    logger.debug("skip reply trigger={} group={} reason=empty_queue", trigger, group_id)
                     return False
-            if not state.queue:
-                logger.debug("skip reply trigger={} group={} reason=empty_queue", trigger, group_id)
-                return False
             if state.replying:
                 if require_mention:
                     should_wait = True
@@ -94,26 +97,32 @@ async def _try_reply(
                     logger.debug("skip reply trigger={} group={} reason=already_replying", trigger, group_id)
                     return False
             else:
-                mention_reference = _mention_reference_id(state.queue)
-                if require_mention and mention_reference is None:
-                    logger.info(
-                        "skip reply trigger={} group={} reason=no_mention_in_queue queue_size={}",
-                        trigger,
-                        group_id,
-                        len(state.queue),
-                    )
-                    return False
-                queue_snapshot = list(state.queue)
+                if forced_snapshot is not None:
+                    mention_reference = _mention_reference_id(forced_snapshot)
+                    queue_snapshot = list(forced_snapshot)
+                else:
+                    mention_reference = _mention_reference_id(state.queue)
+                    if require_mention and mention_reference is None:
+                        logger.info(
+                            "skip reply trigger={} group={} reason=no_mention_in_queue queue_size={}",
+                            trigger,
+                            group_id,
+                            len(state.queue),
+                        )
+                        return False
+                    queue_snapshot = list(state.queue)
+                    state.queue.clear()
                 bot_id = state.bot_id
-                state.queue.clear()
                 run_token = _begin_reply_run(state)
                 break
         if should_wait:
-            logger.info(
-                "wait reply trigger={} group={} reason=already_replying require_mention=true",
-                trigger,
-                group_id,
-            )
+            if not wait_logged:
+                logger.info(
+                    "wait reply trigger={} group={} reason=already_replying require_mention=true",
+                    trigger,
+                    group_id,
+                )
+                wait_logged = True
             await asyncio.sleep(0.5)
     logger.info(
         "reply trigger={} group={} queue_size={} require_mention={} dequeued=true",
@@ -251,7 +260,14 @@ async def _try_reply(
                 )
                 return False
             if not sent_any and not cancelled and queue_snapshot:
-                if require_mention:
+                if forced_snapshot is not None:
+                    for item in queue_snapshot:
+                        item.mentioned_bot = False
+                    state.queue.extend(queue_snapshot)
+                    state.queue.sort(key=lambda item: (item.created_at, item.sequence))
+                    should_send_failure_notice = True
+                    failure_notice_reference = mention_reference
+                elif require_mention:
                     for item in queue_snapshot:
                         item.mentioned_bot = False
                     state.queue.extend(queue_snapshot)
@@ -303,21 +319,24 @@ async def _scheduler_worker(group_id: int) -> None:
                     mention_reference = _mention_reference_id(state.queue)
                     quiet_seconds = max(0.0, float(PLUGIN_CONFIG.timing.mention_quiet_seconds))
                     if mention_reference is not None:
-                        quiet_due_at = state.last_message_at + quiet_seconds
-                        if now >= quiet_due_at:
-                            logger.info(
-                                "mention quiet timeout reached group={} quiet_seconds={}",
-                                group_id,
-                                PLUGIN_CONFIG.timing.mention_quiet_seconds,
-                            )
-                            trigger = (
-                                "mention_quiet",
-                                observed_queue_version,
-                                True,
-                                True,
-                            )
+                        if state.pending_bump_count > 0:
+                            wait_seconds = 0.5
                         else:
-                            wait_seconds = max(0.0, quiet_due_at - now)
+                            quiet_due_at = state.last_message_at + quiet_seconds
+                            if now >= quiet_due_at:
+                                logger.info(
+                                    "mention quiet timeout reached group={} quiet_seconds={}",
+                                    group_id,
+                                    PLUGIN_CONFIG.timing.mention_quiet_seconds,
+                                )
+                                trigger = (
+                                    "mention_quiet",
+                                    observed_queue_version,
+                                    True,
+                                    True,
+                                )
+                            else:
+                                wait_seconds = max(0.0, quiet_due_at - now)
                     else:
                         idle_started_at = state.last_message_at + max(
                             0.0,

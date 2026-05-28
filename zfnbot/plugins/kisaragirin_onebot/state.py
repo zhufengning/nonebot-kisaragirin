@@ -33,6 +33,7 @@ class GroupState:
     reply_token_counter: int = 0
     active_reply_token: int | None = None
     scheduler_task: asyncio.Task[None] | None = None
+    pending_bump_count: int = 0
 
 
 _QUEUE_SEQUENCE = count(1)

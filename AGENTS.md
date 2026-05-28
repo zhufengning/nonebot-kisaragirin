@@ -54,6 +54,8 @@
 - 队列按 `created_at + sequence` 排序。
 - 触发逻辑：
   - 静默 `mention_quiet_seconds` 后，若队列里有 `@bot`，触发一次回复，并引用最后一条 `@` 消息。
+  - 若在 `@bot` 的合并窗口内又收到新的 `@bot`，立即将当前窗口中的消息打包为 `bump_snapshot` 强制触发（引用该窗口最后一条 `@`），并将新 `@` 消息保留在队列中开启下一个合并窗口。
+  - **竞态条件修复**：`bump` 任务创建时会递增 `pending_bump_count`。当前一个慢回复刚好完成时，`scheduler` 和 `bump task` 会同时被唤醒抢锁。若 `scheduler` 先抢到且发现队列中只剩新 `@`，可能直接触发新 `@`，导致旧 `@` 被延后（出现 1→3→2 的顺序错乱）。修复方式是在 `scheduler` 的 mention 检查中加入 `pending_bump_count > 0` 判断：只要有待处理的 `bump`，`scheduler` 就跳过本轮 mention 触发，等 `bump` 完成后再处理队列，确保旧 `@` 优先于新 `@` 回复（严格 FIFO）。
   - 静默 `idle_start_minutes` 后进入每分钟一次概率抽卡，概率递增，期望在 `idle_expect_minutes` 左右触发。
 - 回复执行逻辑：
   - 开始回复时先将当前队列快照并出队（后续新消息不影响本轮）。

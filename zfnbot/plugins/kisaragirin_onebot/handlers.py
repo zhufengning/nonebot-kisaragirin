@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from nonebot import logger
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
 
@@ -7,8 +9,25 @@ from .config import PLUGIN_CONFIG
 from .ops import _match_command
 from .parser import _parse_message, _sender_name
 from .payload import MessageData
-from .scheduler import _refresh_workers
+from .scheduler import _refresh_workers, _try_reply
 from .state import QueuedMessage, _get_group_state, next_queue_sequence
+
+
+async def _run_bump(group_id: int, bump_snapshot: list[QueuedMessage]) -> None:
+    state = _get_group_state(group_id)
+    try:
+        await _try_reply(
+            group_id,
+            0,
+            trigger="mention_bump",
+            require_mention=True,
+            use_mention_reference=True,
+            forced_snapshot=bump_snapshot,
+        )
+    finally:
+        async with state.lock:
+            state.pending_bump_count = max(0, state.pending_bump_count - 1)
+        state.scheduler_event.set()
 
 
 async def _bot_display_name(bot: Bot, group_id: int) -> str:
@@ -89,6 +108,7 @@ async def handle_group_message_event(bot: Bot, event: MessageEvent) -> None:
     bot_name = state.bot_name
     if not bot_name or state.bot_id != runtime_bot_id:
         bot_name = await _bot_display_name(bot, group_id)
+    bump_snapshot: list[QueuedMessage] | None = None
     async with state.lock:
         current_bot_id = runtime_bot_id
         if state.bot_id != current_bot_id:
@@ -104,6 +124,13 @@ async def handle_group_message_event(bot: Bot, event: MessageEvent) -> None:
         state.queue_version += 1
         state.queue.append(queued)
         state.queue.sort(key=lambda item: (item.created_at, item.sequence))
+        if mentioned_bot:
+            other_mentions = [item for item in state.queue if item.mentioned_bot and item is not queued]
+            if other_mentions:
+                bump_snapshot = [item for item in state.queue if item is not queued]
+                state.queue = [queued]
+                state.queue_version += 1
+                state.pending_bump_count += 1
         logger.debug(
             "message queued group={} message_id={} queue_size={} mentioned_bot={} queue_version={}",
             group_id,
@@ -113,3 +140,6 @@ async def handle_group_message_event(bot: Bot, event: MessageEvent) -> None:
             state.queue_version,
         )
         _refresh_workers(group_id, state, state.queue_version)
+
+    if bump_snapshot:
+        asyncio.create_task(_run_bump(group_id, bump_snapshot))
