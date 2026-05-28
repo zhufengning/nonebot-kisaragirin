@@ -154,17 +154,7 @@ def run_memory_gate(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
-    if str(state.get("memory_gate_result", "update")) != "update":
-        attachment = (
-            "[MEMORY-UPDATE]\n"
-            "long_term_memory_updated=false\n"
-            "short_term_memory_appended=none\n"
-            f"skipped_reason={state.get('memory_gate_result', 'skip')}"
-        )
-        agent._log_step_debug(state, "memory", attachment)
-        return {
-            "step_attachments": agent._set_attachment(state, "memory", attachment),
-        }
+    should_update_memory = str(state.get("memory_gate_result", "update")) == "update"
 
     delivered_outputs = state.get("delivered_outputs") or []
     delivered_reply_blocks = [
@@ -175,62 +165,94 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     ]
     delivered_reply_text = "\n\n".join(delivered_reply_blocks).strip()
 
-    memory_input = (
-        f"{MEMORY_JSON_INSTRUCTION}\n\n"
-        "[PREVIOUS-LONG-TERM-MEMORY]\n"
-        f"{state.get('long_term_memory') or '(empty)'}\n\n"
-        "[THIS-TURN-ENRICHED-INPUT]\n"
-        f"{state['working_text']}\n\n"
-        "[THIS-TURN-REPLIES]\n"
-        f"{delivered_reply_text or '(empty)'}"
-    )
-    messages = [
-        SystemMessage(content=agent._system_prompt("memory")),
-        HumanMessage(content=memory_input),
-    ]
-
-    new_long_term = ""
+    new_long_term = str(state.get("long_term_memory") or "")
     memory_compacted = False
     long_term_memory_updated = False
     memory_update_error = ""
-    try:
-        msg = agent._invoke_model("memory", messages)
-        parsed = agent._parse_memory_json(agent._message_to_text(msg.content))
-        new_long_term = agent._normalize_memory_text(
-            parsed.get("long_term_memory"),
-            fallback=state.get("long_term_memory", ""),
+
+    if should_update_memory:
+        memory_input = (
+            f"{MEMORY_JSON_INSTRUCTION}\n\n"
+            "[PREVIOUS-LONG-TERM-MEMORY]\n"
+            f"{state.get('long_term_memory') or '(empty)'}\n\n"
+            "[THIS-TURN-ENRICHED-INPUT]\n"
+            f"{state['working_text']}\n\n"
+            "[THIS-TURN-REPLIES]\n"
+            f"{delivered_reply_text or '(empty)'}"
         )
-        if len(new_long_term) > 2000:
-            compact_input = (
-                f"{MEMORY_JSON_INSTRUCTION}\n\n"
-                "你的记忆太长了，需要精简到2000字符以内。\n\n"
-                "[CURRENT-LONG-TERM-MEMORY]\n"
-                f"{new_long_term}"
-            )
-            compact_messages = [
-                SystemMessage(content=agent._system_prompt("memory")),
-                HumanMessage(content=compact_input),
-            ]
-            compact_msg = agent._invoke_model("memory", compact_messages)
-            compact_parsed = agent._parse_memory_json(
-                agent._message_to_text(compact_msg.content)
-            )
+        messages = [
+            SystemMessage(content=agent._system_prompt("memory")),
+            HumanMessage(content=memory_input),
+        ]
+
+        try:
+            msg = agent._invoke_model("memory", messages)
+            parsed = agent._parse_memory_json(agent._message_to_text(msg.content))
             new_long_term = agent._normalize_memory_text(
-                compact_parsed.get("long_term_memory"),
-                fallback=new_long_term,
+                parsed.get("long_term_memory"),
+                fallback=state.get("long_term_memory", ""),
             )
             if len(new_long_term) > 2000:
-                new_long_term = new_long_term[:2000]
-            memory_compacted = True
-        long_term_memory_updated = True
-    except Exception as exc:
-        memory_update_error = str(exc)
-        agent._logger.warning(
-            "Memory LLM update failed for conversation %s: %s",
-            state["conversation_id"],
-            exc,
+                compact_input = (
+                    f"{MEMORY_JSON_INSTRUCTION}\n\n"
+                    "你的记忆太长了，需要精简到2000字符以内。\n\n"
+                    "[CURRENT-LONG-TERM-MEMORY]\n"
+                    f"{new_long_term}"
+                )
+                compact_messages = [
+                    SystemMessage(content=agent._system_prompt("memory")),
+                    HumanMessage(content=compact_input),
+                ]
+                compact_msg = agent._invoke_model("memory", compact_messages)
+                compact_parsed = agent._parse_memory_json(
+                    agent._message_to_text(compact_msg.content)
+                )
+                new_long_term = agent._normalize_memory_text(
+                    compact_parsed.get("long_term_memory"),
+                    fallback=new_long_term,
+                )
+                if len(new_long_term) > 2000:
+                    new_long_term = new_long_term[:2000]
+                memory_compacted = True
+            long_term_memory_updated = True
+        except Exception as exc:
+            memory_update_error = str(exc)
+            agent._logger.warning(
+                "Memory LLM update failed for conversation %s: %s",
+                state["conversation_id"],
+                exc,
+            )
+            new_long_term = str(state.get("long_term_memory") or "")
+
+    tool_node_summary = str(state.get("tool_node_summary") or "").strip()
+    intermediate_assistants = []
+    if tool_node_summary:
+        intermediate_assistants.append(
+            agent._build_assistant_storage_message(
+                tool_node_summary,
+                self_name=agent._config.self_name,
+            )
         )
-        new_long_term = str(state.get("long_term_memory") or "")
+
+    output_events = state.get("output_events") or []
+    is_all_silence = (
+        not delivered_reply_text
+        and all(str(getattr(evt, "content", "") or "").strip() == "bot选择沉默" for evt in output_events)
+        and bool(output_events)
+    )
+
+    assistant_storage = ""
+    if delivered_reply_text:
+        assistant_storage = agent._build_assistant_storage_message(
+            delivered_reply_text,
+            self_name=agent._config.self_name,
+        )
+    elif is_all_silence:
+        silence_note = "[此消息记录本轮沉默，仅bot自身可见，其他群友未收到任何回复]\nbot选择沉默"
+        assistant_storage = agent._build_assistant_storage_message(
+            silence_note,
+            self_name=agent._config.self_name,
+        )
 
     agent._memory_store.persist_turn(
         conversation_id=state["conversation_id"],
@@ -238,11 +260,9 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
         user_message=str(
             state.get("user_storage_message", state.get("user_message", "")) or ""
         ),
-        assistant_reply=agent._build_assistant_storage_message(
-            delivered_reply_text,
-            self_name=agent._config.self_name,
-        ),
+        assistant_reply=assistant_storage,
         user_image_hashes=state.get("image_hashes") or [],
+        intermediate_assistant_messages=intermediate_assistants,
     )
     openviking_user_message = str(state.get("user_message", "") or "")
     if str(agent._config.message_format or "yaml").strip().lower() == "yaml":
@@ -275,21 +295,34 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
             exc,
         )
 
-    attachment = (
-        "[MEMORY-UPDATE]\n"
-        f"long_term_memory_updated={'true' if long_term_memory_updated else 'false'}\n"
-        f"long_term_memory_compacted={'true' if memory_compacted else 'false'}\n"
-        "short_term_memory_appended=user+assistant\n"
-        f"openviking_commit={openviking_commit_status}\n"
-        f"openviking_tool_events={len(openviking_tool_events)}"
-    )
-    if memory_update_error:
-        attachment += f"\nerror={memory_update_error}"
-    agent._log_step_debug(
-        state,
-        "memory",
-        attachment + f"\nupdated_long_term_memory:\n{new_long_term}",
-    )
+    if should_update_memory:
+        attachment = (
+            "[MEMORY-UPDATE]\n"
+            f"long_term_memory_updated={'true' if long_term_memory_updated else 'false'}\n"
+            f"long_term_memory_compacted={'true' if memory_compacted else 'false'}\n"
+            "short_term_memory_appended=user+assistant\n"
+            f"openviking_commit={openviking_commit_status}\n"
+            f"openviking_tool_events={len(openviking_tool_events)}"
+        )
+        if memory_update_error:
+            attachment += f"\nerror={memory_update_error}"
+        agent._log_step_debug(
+            state,
+            "memory",
+            attachment + f"\nupdated_long_term_memory:\n{new_long_term}",
+        )
+    else:
+        appended_parts = ["user"]
+        if intermediate_assistants:
+            appended_parts.append("intermediate")
+        attachment = (
+            "[MEMORY-UPDATE]\n"
+            "long_term_memory_updated=false\n"
+            f"short_term_memory_appended={'+'.join(appended_parts)}\n"
+            f"skipped_reason={state.get('memory_gate_result', 'skip')}"
+        )
+        agent._log_step_debug(state, "memory", attachment)
+
     return {
         "long_term_memory": new_long_term,
         "step_attachments": agent._set_attachment(state, "memory", attachment),

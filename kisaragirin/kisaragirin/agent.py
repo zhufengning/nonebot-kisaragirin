@@ -161,6 +161,7 @@ class AgentState(TypedDict, total=False):
     output_events: list[OutputEvent]
     delivered_outputs: list[OutputEvent]
     reply_completed_ms: float
+    tool_node_summary: str
     step_attachments: Annotated[dict[str, str], _merge_str_dicts]
     step_durations_ms: Annotated[dict[str, float], _merge_float_dicts]
 
@@ -225,13 +226,6 @@ class KisaragiAgent:
     ) -> None:
         self._config = config
         self._logger = logging.getLogger("kisaragirin.agent")
-        self._nonebot_logger: Any | None = None
-        try:
-            from nonebot import logger as nonebot_logger
-
-            self._nonebot_logger = nonebot_logger
-        except Exception:
-            self._nonebot_logger = None
         self._memory_store = SQLiteMemoryStore(config.memory_db_path)
         self._models = self._build_models(config)
         self._crawler_cls = None
@@ -387,6 +381,7 @@ class KisaragiAgent:
 
         has_silence = False
         default_silence_fallback: OutputEvent | None = None
+        all_tool_summaries: list[str] = []
         for route_index, route_id in enumerate(route_choices):
             execution_plan = self._resolve_execution_plan(
                 route_decision,
@@ -430,6 +425,10 @@ class KisaragiAgent:
                 except Exception:
                     continue
             all_tool_events.extend(route_result.get("tool_events") or [])
+            route_summary = str(route_result.get("tool_node_summary") or "").strip()
+            if route_summary and route_summary not in all_tool_summaries:
+                all_tool_summaries.append(route_summary)
+            aggregated_state["tool_node_summary"] = "\n\n".join(all_tool_summaries)
 
             reply_text = ""
             if reply_output_key:
@@ -523,6 +522,10 @@ class KisaragiAgent:
                 except Exception:
                     continue
             all_tool_events.extend(lite_route_result.get("tool_events") or [])
+            lite_summary = str(lite_route_result.get("tool_node_summary") or "").strip()
+            if lite_summary and lite_summary not in all_tool_summaries:
+                all_tool_summaries.append(lite_summary)
+            aggregated_state["tool_node_summary"] = "\n\n".join(all_tool_summaries)
 
             lite_reply_text = ""
             if lite_reply_output_key:
@@ -577,6 +580,7 @@ class KisaragiAgent:
         aggregated_state["reply_completed_ms"] = max_reply_completed_ms
         aggregated_state["output_events"] = final_output_events
         aggregated_state["reply"] = self._join_output_texts(final_output_events)
+        aggregated_state["tool_node_summary"] = "\n\n".join(all_tool_summaries)
         return aggregated_state
 
     def _route_scoped_working_text(self, state: AgentState, route_id: str) -> str:
@@ -970,7 +974,7 @@ class KisaragiAgent:
         for model_id, model_cfg in config.models.items():
             provider = model_cfg.provider.strip().lower() or "openai"
             chat_cls = self._resolve_chat_model_class(provider)
-            init_kwargs = self._build_model_init_kwargs(model_cfg)
+            init_kwargs = self._build_model_init_kwargs(model_cfg, provider=provider)
             models[model_id] = chat_cls(**init_kwargs)
 
         required_ids = {
@@ -1198,7 +1202,7 @@ class KisaragiAgent:
         if not bool(state.get("debug")):
             return
         conversation_id = str(state.get("conversation_id", "?"))
-        self._log_info(
+        self._logger.info(
             "[DEBUG][%s][conversation=%s]\n%s", step, conversation_id, content
         )
 
@@ -1212,7 +1216,7 @@ class KisaragiAgent:
             return
         conversation_id = str(state.get("conversation_id", "?"))
         rendered = self._render_debug_messages(messages)
-        self._log_info(
+        self._logger.info(
             "[DEBUG][%s.llm_input][conversation=%s]\n%s",
             step,
             conversation_id,
@@ -1257,13 +1261,6 @@ class KisaragiAgent:
         total_ms: float,
     ) -> None:
         return
-
-    def _log_info(self, fmt: str, *args: Any) -> None:
-        message = fmt % args if args else fmt
-        if self._nonebot_logger is not None:
-            self._nonebot_logger.info(message)
-            return
-        self._logger.info(message)
 
     @staticmethod
     def _get_conversation_lock(conversation_id: str) -> Lock:
@@ -1362,7 +1359,7 @@ class KisaragiAgent:
         fallback_pool = getattr(self._config.step_fallbacks, step_name, ())
         last_exc: Exception | None = None
 
-        self._logger.info("[FALLBACK-DRAW] step=%s model=%s", step_name, primary_id)
+        self._logger.info("[PRIMARY-DRAW] step=%s model=%s", step_name, primary_id)
         try:
             return self._model(primary_id).invoke(messages)
         except Exception as exc:
@@ -1415,7 +1412,7 @@ class KisaragiAgent:
         fallback_pool = getattr(self._config.step_fallbacks, step_name, ())
         last_exc: Exception | None = None
 
-        self._logger.info("[FALLBACK-DRAW] step=%s model=%s (tools)", step_name, primary_id)
+        self._logger.info("[PRIMARY-DRAW] step=%s model=%s (tools)", step_name, primary_id)
         try:
             return self._model(primary_id).bind_tools(list(tools)).invoke(messages)
         except Exception as exc:
@@ -1474,22 +1471,38 @@ class KisaragiAgent:
                 raise RuntimeError(
                     "Provider 'siliconflow' requires package 'langchain-siliconflow'."
                 ) from exc
+        if provider == "anthropic":
+            try:
+                module = import_module("langchain_anthropic")
+                return getattr(module, "ChatAnthropic")
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(
+                    "Provider 'anthropic' requires package 'langchain-anthropic'."
+                ) from exc
         raise ValueError(
-            f"Unsupported provider '{provider}'. Supported providers: openai, siliconflow"
+            f"Unsupported provider '{provider}'. Supported providers: openai, siliconflow, anthropic"
         )
 
-    @staticmethod
-    def _build_model_init_kwargs(model_cfg: Any) -> dict[str, Any]:
-        raw_kwargs: dict[str, Any] = {
-            "base_url": model_cfg.base_url,
-            "api_key": model_cfg.api_key,
-            "model": model_cfg.model,
-            "temperature": model_cfg.temperature,
-            "timeout": model_cfg.timeout,
-
-            "extra_body": model_cfg.extra_body,
-            "model_kwargs": dict(model_cfg.model_kwargs),
-        }
+    def _build_model_init_kwargs(self, model_cfg: Any, provider: str = "openai") -> dict[str, Any]:
+        if provider == "anthropic":
+            raw_kwargs: dict[str, Any] = {
+                "anthropic_api_url": model_cfg.base_url,
+                "anthropic_api_key": model_cfg.api_key,
+                "model": model_cfg.model,
+                "temperature": model_cfg.temperature,
+                "default_request_timeout": model_cfg.timeout,
+                "model_kwargs": dict(model_cfg.model_kwargs),
+            }
+        else:
+            raw_kwargs = {
+                "base_url": model_cfg.base_url,
+                "api_key": model_cfg.api_key,
+                "model": model_cfg.model,
+                "temperature": model_cfg.temperature,
+                "timeout": model_cfg.timeout,
+                "extra_body": model_cfg.extra_body,
+                "model_kwargs": dict(model_cfg.model_kwargs),
+            }
         merged = {k: v for k, v in raw_kwargs.items() if v is not None}
         merged.update(dict(model_cfg.client_kwargs))
         return merged
@@ -1498,17 +1511,15 @@ class KisaragiAgent:
         sections: list[str] = []
         instruction = STEP_SYSTEM_INSTRUCTIONS.get(step, "")
         if instruction:
-            sections.append(
-                f"---\nThis is a scenario task evaluation project used to test the capabilities of LLM. After reading the task file, complete the corresponding tasks according to the instructions within, and output the final results.\n---TASK FILE CONTENT---\n\n[INSTRUCTION:{step}]\n{instruction}"
-            )
+            sections.append(instruction)
         if step not in {"summarize", "vision", "tool", "tool_lite"} and self._config.prompts.persona.strip():
             sections.append(
-                "---Additional Task Requirements---\n[OUTPUT_STYLE.PERSONA]\n"
+                "[PERSONA]\n"
                 + self._config.prompts.persona.strip()
             )
         if sections:
-            return ("\n\n".join(sections)) + "\n---\n"
-        return f"You are in step '{step}'.\n---\n"
+            return "\n\n".join(sections)
+        return f"[STEP: {step}]"
 
     @staticmethod
     def _compute_image_sha256(image: ImageInput) -> str:

@@ -2,15 +2,25 @@ import nonebot
 from nonebot.adapters.onebot.v11 import Adapter as OnebotAdapter
 import logging
 import sys
-from nonebot.log import logger, default_format, LoguruHandler
+from nonebot.log import logger, default_format
 
-# 自定义一个 Handler 忽略 uvicorn 自身的重复转发
-class InterceptHandler(LoguruHandler):
+
+class InterceptHandler(logging.Handler):
+    """把标准 logging 转发到 loguru，并保留原始 record.name 避免显示 __main__。"""
+
     def emit(self, record: logging.LogRecord):
         # 拦截 uvicorn 和 fastapi 的重复日志，因为它们由 driver 自身配置了专门的 Handler 转发到 Loguru
         if record.name.startswith("uvicorn") or record.name.startswith("fastapi"):
             return
-        super().emit(record)
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        # patch name 保证 loguru 的 record["name"] 与标准 logging 的 record.name 一致
+        logger.patch(lambda r: r.update(name=record.name)).opt(
+            exception=record.exc_info
+        ).log(level, record.getMessage())
+
 
 # 1. 重定向标准 logging 到 NoneBot 的 Loguru 实现彩色和统一格式
 logging.basicConfig(handlers=[InterceptHandler()], level=logging.DEBUG, force=True)

@@ -55,6 +55,14 @@ PLUGIN_CONFIG = PluginConfig(
             model="Pro/moonshotai/Kimi-K2.5",
             extra_body={"enable_thinking": False},
         ),
+        # Anthropic Messages API 示例（provider 填 anthropic，base_url 通常用 https://api.anthropic.com）
+        # ModelConfig(
+        #     id="claude",
+        #     provider="anthropic",
+        #     base_url="https://api.anthropic.com",
+        #     api_key="YOUR_ANTHROPIC_API_KEY",
+        #     model="claude-sonnet-4-20250514",
+        # ),
     ),
     step_models=StepModelIds(
         summarize="kimi",

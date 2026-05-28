@@ -233,13 +233,14 @@ class SQLiteMemoryStore:
         user_message: str,
         assistant_reply: str,
         user_image_hashes: Sequence[str] | None = None,
+        intermediate_assistant_messages: Sequence[str] | None = None,
     ) -> None:
         conversation_id = str(conversation_id)
         long_term_memory = str(long_term_memory)
         user_message = str(user_message)
         assistant_reply = str(assistant_reply)
+        intermediates = list(intermediate_assistant_messages or ())
         now = time.time()
-        assistant_time = now + 1e-6
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
@@ -259,7 +260,17 @@ class SQLiteMemoryStore:
                     """,
                     (conversation_id, "user", user_message, now),
                 )
+                for idx, msg in enumerate(intermediates, start=1):
+                    if msg.strip():
+                        self._conn.execute(
+                            """
+                            INSERT INTO short_term_memory (conversation_id, role, content, created_at)
+                            VALUES (?, ?, ?, ?)
+                            """,
+                            (conversation_id, "assistant", str(msg).strip(), now + idx * 1e-6),
+                        )
                 if assistant_reply:
+                    assistant_time = now + (len(intermediates) + 1) * 1e-6
                     self._conn.execute(
                         """
                         INSERT INTO short_term_memory (conversation_id, role, content, created_at)

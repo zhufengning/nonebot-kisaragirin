@@ -4,7 +4,7 @@
 
 ## 特性
 
-- 多模型配置：每个模型有独立 `id/provider/base_url/api_key/model`
+- 多模型配置：每个模型有独立 `id/provider/base_url/api_key/model`；支持 `openai`、`siliconflow`、`anthropic` 三种 provider
 - 每个步骤按 `id` 选择模型，可重复复用同一模型配置
 - crawler 运行参数可配置：`headless`、`verbose`、`user_data_dir`
 - `crawl4ai` 为必选依赖（URL 抓取步骤强依赖）

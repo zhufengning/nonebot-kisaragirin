@@ -2,7 +2,7 @@
 
 请在做出任何修改后检查是否需要更新README, AGENTS.md以及其他文档。
 
-修改代码后必须使用ty check和ruff check检查并修复报错，该指令不属于运行测试，也不会调用项目中的任何脚本。
+修改代码后必须使用ty check和ruff check检查并修复报错，该指令不属于运行测试，也不会调用项目中的任何脚本。禁止使用basedpyright(`uv run ty check`和`uv run ruff check`)
 
 始终按最优方案编写代码，不要在乎任何兼容性。
 
@@ -83,11 +83,20 @@
 - `enrich_merge`：汇总 `url` 与 `vision` 的补充内容，拼回工作上下文。
 - `route`：判断进入哪些路径（可为空、可多选）。
 - `tools`：按需调用工具补充信息（仅 `default` 路径）。
+  - **工具调用模型说明**：`tool` / `tool_lite` 节点接入的模型可能是上游已封装好的 Agent（例如 OpenClaw、Hermes 等），其内部会自行调用工具并直接返回总结性结果。此时 `AIMessage.tool_calls` 可能为空，但模型输出的文本已包含工具调用后的总结。
+  - `tools` / `tools_lite` 节点执行完成后，会将模型最终返回的总结文本作为一条**独立的** `assistant` 消息写入短期记忆。该消息与后续 `reply` / `reply_lite` 产出的回复**不是同一条消息**，且**在 reply 之前**写入，仅用于让 bot 在后续轮次中记得自己查过什么。
+  - 写入内容前缀为 `[bot 内部备忘：此内容为工具调用结果，仅自己可见，群友不可见]`。
+  - 若同一次执行存在多条路径（如 `default` 与 `lite_chat`），各路径的工具调用结果会按执行顺序聚合，后续路径的 `tools` 节点可直接从 state 中读取先前路径的总结。
+  - 即使 bot 最终选择沉默（未发送任何回复），该工具调用记录仍会写入短期记忆，确保 bot 不会遗忘已查询到的信息。
 - `reply`：生成技术路径回复文本，只处理技术相关输入，输出技术性内容，长度不超过 150 字；输出 `bot选择沉默` 时取消该路径回复。
 - `reply_lite`：生成休闲路径回复文本，只处理休闲/情绪化输入；若收到上一轮检查评语，会基于“上一版回复 + 评语”重写；输出 `bot选择沉默` 时取消该路径回复。
 - `reply_lite_check`：顺序执行用语检查函数，写出是否通过与评语；若失败则驱动下一轮 `reply_lite` 重写，连续 3 次失败后取消该路径回复，并记录检查日志。
 - `memory_gate`：根据回复发送结果决定是否进入记忆写回。
-- `memory`：在全部路径结束后，写回长期记忆与短期记忆（user+assistant），并合并本轮所有成功发送的路径回复。
+- `memory`：在全部路径结束后，写回长期记忆与短期记忆。
+  - 长期记忆仅在 bot 有成功发送的回复时更新；沉默时保持原状。
+  - 短期记忆始终写入本轮 user 输入。
+  - 无论是否沉默，只要 `tools` / `tools_lite` 节点产出了工具调用总结，都会作为 intermediate assistant 消息在 user 与最终 reply 之间写入短期记忆；多条路径的工具结果按执行顺序全部保留。
+  - 当所有路径（含 fallback）均选择沉默时，会额外写入一条 assistant 消息，内容为 `[此消息记录本轮沉默，仅bot自身可见，其他群友未收到任何回复]`，让 bot 记得本轮未输出任何内容。
 
 ## 数据与缓存
 
@@ -110,6 +119,7 @@
 - `exa_api_key` 用于启用 Exa 的 `web_search`；若为空可回退 `brave_search_api_key`。
 - 不再依赖 `.env` 作为插件主配置来源。
 - **模型 fallback**：每个 step（节点）在 `AgentConfig.step_fallbacks`（`StepFallbackPools`）中配置独立的 fallback 池子。当主模型调用失败（超时/限流/异常）时，会从该 step 的 fallback 池子里**随机**捞一个备用模型重试，最多重试 `AgentConfig.max_retries` 次（全局配置）。所有 LLM 调用点（`summarize`、`vision`、`reply`、`reply_lite`、`memory`、`tool`、`route` 等）均已接入该机制。fallback 池子里可以包含主模型自身。
+- **支持的 LLM provider**：`openai`（OpenAI 兼容接口）、`siliconflow`（硅基流动）、`anthropic`（Anthropic Messages API，对应 `langchain-anthropic`）。
 
 ## 日志行为
 

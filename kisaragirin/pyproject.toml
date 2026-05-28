@@ -9,6 +9,7 @@ dependencies = [
     "exa-py>=1.15.0",
     "langchain-openai>=0.3.9",
     "langchain-siliconflow>=0.1.0",
+    "langchain-anthropic>=0.3.0",
     "langgraph>=1.0.9",
     "openviking>=0.1.18",
     "pyyaml>=6.0.3",

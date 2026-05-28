@@ -144,6 +144,7 @@ def run_tools(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
     logs: list[str] = []
     tool_events: list[OpenVikingToolEvent] = []
+    final_model_message = ""
 
     for round_idx in range(1, agent._config.max_tool_rounds + 1):
         raw_ai_message = agent._invoke_model_with_tools(
@@ -164,6 +165,7 @@ def run_tools(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
             final_note = agent._message_to_text(ai_message.content)
             if final_note.strip():
                 logs.append(f"[ROUND-{round_idx}-MODEL-NOTE]\n{final_note.strip()}")
+                final_model_message = final_note.strip()
             break
 
         for call_idx, tool_call in enumerate(tool_calls, start=1):
@@ -201,9 +203,18 @@ def run_tools(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
     appendix = "\n\n".join(logs)
     agent._log_step_debug(state, "tools", appendix)
+
+    tool_node_summary = ""
+    if final_model_message:
+        tool_node_summary = (
+            "[此消息来自工具调用节点，仅bot自身可见，其他群友不可见]\n\n"
+            f"{final_model_message}"
+        )
+
     result: dict[str, Any] = {
         "tool_events": tool_events,
         "step_attachments": agent._set_attachment(state, "tools", appendix),
+        "tool_node_summary": tool_node_summary,
     }
     if appendix:
         result["working_text"] = state["working_text"] + "\n\n" + appendix
@@ -221,6 +232,7 @@ def run_tools_lite(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
     logs: list[str] = []
     tool_events: list[OpenVikingToolEvent] = []
+    final_model_message = ""
 
     for round_idx in range(1, agent._config.max_tool_rounds + 1):
         raw_ai_message = agent._invoke_model_with_tools(
@@ -241,6 +253,7 @@ def run_tools_lite(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
             final_note = agent._message_to_text(ai_message.content)
             if final_note.strip():
                 logs.append(f"[ROUND-{round_idx}-MODEL-NOTE]\n{final_note.strip()}")
+                final_model_message = final_note.strip()
             break
 
         for call_idx, tool_call in enumerate(tool_calls, start=1):
@@ -278,9 +291,18 @@ def run_tools_lite(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
     appendix = "\n\n".join(logs)
     agent._log_step_debug(state, "tools_lite", appendix)
+
+    tool_node_summary = ""
+    if final_model_message:
+        tool_node_summary = (
+            "[此消息来自工具调用节点，仅bot自身可见，其他群友不可见]\n\n"
+            f"{final_model_message}"
+        )
+
     result: dict[str, Any] = {
         "tool_events": tool_events,
         "step_attachments": agent._set_attachment(state, "tools_lite", appendix),
+        "tool_node_summary": tool_node_summary,
     }
     if appendix:
         result["working_text"] = state["working_text"] + "\n\n" + appendix
