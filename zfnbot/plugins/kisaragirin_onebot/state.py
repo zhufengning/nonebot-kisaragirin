@@ -64,6 +64,7 @@ def _get_group_agent(group_id: int) -> KisaragiAgent:
     agent_kwargs: dict[str, Any] = {
         "message_format": PLUGIN_CONFIG.message_format,
         "self_name": state.bot_name or "assistant",
+        "me_label": group_config.me_label,
         "exa_api_key": PLUGIN_CONFIG.exa_api_key,
         "brave_search_api_key": PLUGIN_CONFIG.brave_search_api_key,
         "serpapi_api_key": PLUGIN_CONFIG.serpapi_api_key,

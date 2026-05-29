@@ -12,6 +12,7 @@ from .config import (
     StepFallbackPools,
     StepModelIds,
 )
+from .message_types import Message, MessageSegment
 from .openviking import OpenVikingConfig
 from .routing import (
     ConditionalEdgeSpec,
@@ -33,7 +34,9 @@ __all__ = [
     "GraphSpec",
     "ImageInput",
     "KisaragiAgent",
+    "Message",
     "MessageFormat",
+    "MessageSegment",
     "ModelConfig",
     "OutputEvent",
     "OpenVikingConfig",

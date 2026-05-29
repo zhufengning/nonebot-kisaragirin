@@ -29,7 +29,8 @@
 - `zfnbot/plugins/kisaragirin_onebot/scheduler.py`：队列触发策略、发送回复、worker 刷新。
 - `zfnbot/plugins/kisaragirin_onebot/ops.py`：管理指令匹配与执行（`/help`、`/clear`、`/clears`、`/clearl`）。
 - `zfnbot/plugins/kisaragirin_onebot/state.py`：群状态、Agent 缓存、清理与关闭逻辑。
-- `zfnbot/plugins/kisaragirin_onebot/payload.py`：将消息序列化为 YAML 或简化聊天记录文本，并构造 `ConversationRequest`。
+- `zfnbot/plugins/kisaragirin_onebot/payload.py`：将 OneBot 平台消息转换为通用 `Message`/`MessageSegment` 对象，构造 `ConversationRequest`。不再处理消息格式渲染。
+- `kisaragirin/kisaragirin/message_types.py`：通用消息类型 `Message` / `MessageSegment` 定义与 JSON 序列化辅助函数。
 - `zfnbot/plugins/kisaragirin_onebot/config_schema.py`：插件配置结构定义。
 - `zfnbot/plugins/kisaragirin_onebot/config.py`：插件实际运行配置。
 - `kisaragirin/kisaragirin/agent.py`：Agent 主流程与图装配入口。
@@ -50,7 +51,8 @@
 - 仅处理群消息。
 - 消息段支持：`text`、`image`、`reply`（`reply` 会递归抓取原消息并嵌入结构，最大深度限制）。
 - 图片不直接传 URL 给模型，转为 base64 后放入 `ConversationRequest.images`。
-- 发给 Agent 的正文由 `message_format` 控制：默认 `yaml` 会保留 message/segment 层级；`simple` 会渲染成接近 QQ 聊天记录的纯文本块。
+- OneBot 侧仅负责把平台消息（`MessageData`/`MessageSegmentData`）转换成通用 `Message`/`MessageSegment` 对象，通过 `ConversationRequest.messages` 传给 Agent。
+- 消息格式渲染（`yaml` / `simple` / `simple-id`）完全由 Agent 内部统一处理。Agent 收到 `list[Message]` 后，根据 `message_format` 渲染成 prompt 文本；历史记忆读出后也重新渲染。
 - 队列按 `created_at + sequence` 排序。
 - 触发逻辑：
   - 静默 `mention_quiet_seconds` 后，若队列里有 `@bot`，触发一次回复，并引用最后一条 `@` 消息。
@@ -79,7 +81,7 @@
 
 ## Agent 流程（kisaragirin）
 
-- `prepare`：组合长期记忆、短期记忆、固定记忆与当前输入。
+- `prepare`：组合长期记忆、短期记忆、固定记忆与当前输入。`user_message` 由 `_build_initial_state` 根据 `request.messages` 和 `message_format` 渲染得到。
 - `url`：提取 URL，抓取文本并总结；URL 总结会缓存。命中 URL 关键词黑名单时会跳过抓取与缓存命中，直接返回 `禁止读取的url`（当前黑名单包含 `qq.com.cn`）。
 - `vision`：处理图片并生成描述；图片描述按 sha256 缓存。
 - `enrich_merge`：汇总 `url` 与 `vision` 的补充内容，拼回工作上下文。
@@ -96,7 +98,7 @@
 - `memory_gate`：根据回复发送结果决定是否进入记忆写回。
 - `memory`：在全部路径结束后，写回长期记忆与短期记忆。
   - 长期记忆仅在 bot 有成功发送的回复时更新；沉默时保持原状。
-  - 短期记忆始终写入本轮 user 输入。
+  - 短期记忆始终写入本轮 user 输入（以 JSON 序列化的 `list[Message]` 形式存入 SQLite，旧数据兼容 YAML payload 格式）。
   - 无论是否沉默，只要 `tools` / `tools_lite` 节点产出了工具调用总结，都会作为 intermediate assistant 消息在 user 与最终 reply 之间写入短期记忆；多条路径的工具结果按执行顺序全部保留。
   - 当所有路径（含 fallback）均选择沉默时，会额外写入一条 assistant 消息，内容为 `[此消息记录本轮沉默，仅bot自身可见，其他群友未收到任何回复]`，让 bot 记得本轮未输出任何内容。
 

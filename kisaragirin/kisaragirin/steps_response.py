@@ -4,6 +4,7 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from .message_types import Message, MessageSegment, messages_to_json
 from .prompts import MEMORY_JSON_INSTRUCTION
 from .reply_lite_checks import DEFAULT_LITE_REPLY_CHECKERS
 
@@ -228,10 +229,15 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     intermediate_assistants = []
     if tool_node_summary:
         intermediate_assistants.append(
-            agent._build_assistant_storage_message(
-                tool_node_summary,
-                self_name=agent._config.self_name,
-            )
+            messages_to_json([
+                Message(
+                    message_id=f"assistant-tool-{hash(tool_node_summary) & 0xFFFFFFFF}",
+                    sender_id="assistant",
+                    sender_name=agent._config.self_name or "assistant",
+                    is_me=True,
+                    segments=[MessageSegment(type="text", text=tool_node_summary)],
+                )
+            ])
         )
 
     output_events = state.get("output_events") or []
@@ -243,22 +249,32 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
 
     assistant_storage = ""
     if delivered_reply_text:
-        assistant_storage = agent._build_assistant_storage_message(
-            delivered_reply_text,
-            self_name=agent._config.self_name,
-        )
+        assistant_storage = messages_to_json([
+            Message(
+                message_id=f"assistant-reply-{hash(delivered_reply_text) & 0xFFFFFFFF}",
+                sender_id="assistant",
+                sender_name=agent._config.self_name or "assistant",
+                is_me=True,
+                segments=[MessageSegment(type="text", text=delivered_reply_text)],
+            )
+        ])
     elif is_all_silence:
         silence_note = "[此消息记录本轮沉默，仅bot自身可见，其他群友未收到任何回复]\nbot选择沉默"
-        assistant_storage = agent._build_assistant_storage_message(
-            silence_note,
-            self_name=agent._config.self_name,
-        )
+        assistant_storage = messages_to_json([
+            Message(
+                message_id="assistant-silence",
+                sender_id="assistant",
+                sender_name=agent._config.self_name or "assistant",
+                is_me=True,
+                segments=[MessageSegment(type="text", text=silence_note)],
+            )
+        ])
 
     agent._memory_store.persist_turn(
         conversation_id=state["conversation_id"],
         long_term_memory=new_long_term,
         user_message=str(
-            state.get("user_storage_message", state.get("user_message", "")) or ""
+            state.get("user_messages_json", state.get("user_message", "")) or ""
         ),
         assistant_reply=assistant_storage,
         user_image_hashes=state.get("image_hashes") or [],
@@ -267,7 +283,7 @@ def run_memory(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     openviking_user_message = str(state.get("user_message", "") or "")
     if str(agent._config.message_format or "yaml").strip().lower() == "yaml":
         openviking_user_message = str(
-            state.get("user_storage_message", state.get("user_message", "")) or ""
+            state.get("user_messages_json", state.get("user_message", "")) or ""
         )
     openviking_user_message = agent._resolve_alias_descriptions(
         openviking_user_message, state

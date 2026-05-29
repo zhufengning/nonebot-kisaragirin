@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, Mapping, Self, Sequence, TypedDict, Unpack
 
+from .message_types import Message
 from .openviking import OpenVikingConfig
 
 
@@ -84,6 +85,7 @@ class AgentConfig:
     openviking: OpenVikingConfig = field(default_factory=OpenVikingConfig)
     message_format: MessageFormat = "yaml"
     self_name: str = "assistant"
+    me_label: str = "(me)"
     exa_api_key: str = ""
     brave_search_api_key: str = ""
     serpapi_api_key: str = ""
@@ -120,6 +122,7 @@ class AgentConfigKwargs(TypedDict, total=False):
     openviking: OpenVikingConfig
     message_format: MessageFormat
     self_name: str
+    me_label: str
     exa_api_key: str
     brave_search_api_key: str
     serpapi_api_key: str
@@ -137,8 +140,7 @@ class AgentConfigKwargs(TypedDict, total=False):
 @dataclass(slots=True)
 class ConversationRequest:
     conversation_id: str
-    message: str
-    storage_message: str = ""
+    messages: list[Message] = field(default_factory=list)
     images: list[ImageInput] = field(default_factory=list)
     debug: bool = False
 

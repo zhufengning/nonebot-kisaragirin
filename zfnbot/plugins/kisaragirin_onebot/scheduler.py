@@ -17,13 +17,12 @@ from .state import (
     _get_group_agent,
     _get_group_state,
 )
-def _build_request(group_id: int, queue: list[QueuedMessage]):
+def _build_request(group_id: int, queue: list[QueuedMessage], bot_id: str = ""):
     payload_messages = [item.payload for item in queue]
     return build_agent_request(
         conversation_id=str(group_id),
-        platform="onebot.v11",
         messages=payload_messages,
-        message_format=PLUGIN_CONFIG.message_format,
+        bot_id=bot_id,
         debug=PLUGIN_CONFIG.debug,
     )
 
@@ -132,7 +131,7 @@ async def _try_reply(
         require_mention,
     )
 
-    request = _build_request(group_id, queue_snapshot)
+    request = _build_request(group_id, queue_snapshot, bot_id=bot_id)
     sent_any = False
     cancelled = False
     delivered_output_ids: list[str] = []

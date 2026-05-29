@@ -13,6 +13,7 @@ class GroupConfig:
     persona: str
     fixed_memory: str = ""
     blacklist: tuple[int, ...] = ()
+    me_label: str = "(me)"
 
 
 @dataclass(slots=True, frozen=True)
